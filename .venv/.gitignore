@@ -1,0 +1,4 @@
+# created by virtualenv automatically
+*.dbf
+/egk_extend306/
+*.db
