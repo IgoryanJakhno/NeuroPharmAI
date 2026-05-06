@@ -196,6 +196,118 @@ class DataBaseManager:
         results = self.cursor.fetchall()
         return [dict(row) for row in results]
 
+    def get_drug_full_info(self, trade_name: str) -> Dict[str, Any]:
+        """
+        Возвращает полную информацию о препарате по торговому названию.
+        Использует таблицы: TRADE, INTER, PHARMGRP, DRUGS, FIRM, COUNTRY.
+        """
+        self.logger.info(f"Запрос полной информации о препарате: '{trade_name}'")
+
+        # Сначала найдем TRADE_ID по названию
+        trade = self.cursor.execute(
+            "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
+            (f'%{trade_name}%',)
+        ).fetchone()
+
+        if not trade:
+            return {"error": f"Препарат '{trade_name}' не найден"}
+
+        trade_id = trade['TRADE_ID']
+        inter_id = trade['INTER_ID']
+
+        # Получаем МНН
+        inter = self.cursor.execute(
+            "SELECT INTER_RFN FROM INTER WHERE INTER_ID = ?",
+            (inter_id,)
+        ).fetchone()
+
+        # Получаем упаковки из DRUGS
+        drugs = self.cursor.execute("""
+            SELECT d.DRUG_NAME, d.FORM_RFN, d.MED_DOSE, d.NOM_QTTY,
+                   f.FIRM_RFN, c.CNTRY_RFN, d.CHECK_DATE
+            FROM DRUGS d
+            LEFT JOIN FIRM f ON d.FIRM_ID = f.FIRM_ID
+            LEFT JOIN COUNTRY c ON d.CNTRY_ID = c.CNTRY_ID
+            WHERE d.TRADE_ID = ? AND d.INVALID = 0
+            ORDER BY d.CHECK_DATE DESC
+            LIMIT 20
+        """, (trade_id,)).fetchall()
+
+        return {
+            "trade_name": trade['TRADE_RFN'],
+            "mnn": inter['INTER_RFN'] if inter else None,
+            "packages": [dict(row) for row in drugs],
+            "total_packages": len(drugs)
+        }
+
+    def get_synonyms_by_mnn(self, mnn_name: str) -> List[Dict[str, Any]]:
+        """
+        Находит все торговые наименования по международному непатентованному названию.
+        Пример: "Парацетамол" -> ["Панадол", "Эффералган", "Цефекон", ...]
+        """
+        self.logger.info(f"Поиск синонимов для МНН: '{mnn_name}'")
+
+        query = """
+        SELECT t.TRADE_RFN, t.TRADE_ID
+        FROM INTER i
+        JOIN TRADE t ON i.INTER_ID = t.INTER_ID
+        WHERE i.INTER_RFN LIKE ? AND t.INVALID = 0 AND i.INVALID = 0
+        ORDER BY t.TRADE_RFN
+        LIMIT 100
+        """
+        results = self.cursor.execute(query, (f'%{mnn_name}%',)).fetchall()
+        return [dict(row) for row in results]
+
+    def get_analogs_by_drug(self, trade_name: str) -> Dict[str, Any]:
+        """
+        Находит синонимы (тот же МНН) и аналоги (та же фармгруппа) препарата.
+        """
+        self.logger.info(f"Поиск синонимов и аналогов для: '{trade_name}'")        # Находим сам препарат
+        trade = self.cursor.execute(
+            "SELECT TRADE_ID, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
+            (f'%{trade_name}%',)
+        ).fetchone()
+
+        if not trade:
+            return {"error": f"Препарат '{trade_name}' не найден"}
+
+        inter_id = trade['INTER_ID']
+
+        # Получаем фармгруппу через INTER
+        inter = self.cursor.execute(
+            "SELECT PHAGRP_ID FROM INTER WHERE INTER_ID = ?",
+            (inter_id,)
+        ).fetchone()
+
+        pharmgrp_id = inter['PHAGRP_ID'] if inter else None
+
+        # Аналоги по тому же МНН (полные аналоги)
+        same_mnn = self.cursor.execute("""
+            SELECT DISTINCT t.TRADE_RFN
+            FROM TRADE t
+            WHERE t.INTER_ID = ? AND t.INVALID = 0 AND t.TRADE_RFN NOT LIKE ?
+            LIMIT 50
+        """, (inter_id, f'%{trade_name}%')).fetchall()
+
+        # Терапевтические аналоги (та же фармгруппа, другое МНН)
+        same_group = []
+        if pharmgrp_id:
+            same_group = self.cursor.execute("""
+                SELECT DISTINCT t.TRADE_RFN, i.INTER_RFN
+                FROM TRADE t
+                JOIN INTER i ON t.INTER_ID = i.INTER_ID
+                WHERE i.PHAGRP_ID = ? AND i.INTER_ID != ? AND t.INVALID = 0
+                LIMIT 30
+            """, (pharmgrp_id, inter_id)).fetchall()
+
+        return {
+            "drug": trade_name,
+            "synonyms": [row['TRADE_RFN'] for row in same_mnn],
+            "analogs": [
+                {"trade": row['TRADE_RFN'], "mnn": row['INTER_RFN']}
+                for row in same_group
+            ]
+        }
 
 # --- 2. Абстрактный обработчик запросов ---
 class BaseQueryHandler(ABC):
@@ -233,7 +345,55 @@ class DiseaseToDrugHandler(BaseQueryHandler):
             "result": [d['TRADE_RFN'] for d in drugs]  # Извлекаем только названия
         }
 
+class DrugFullInfoHandler(BaseQueryHandler):
+    """Обработчик: полная информация о препарате."""
 
+    def can_handle(self, intent: str) -> bool:
+        return intent == "get_drug_info"
+
+    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
+        drug_name = entities.get("drug_name") or entities.get("drug")
+        if not drug_name:
+            return {"error": "Не указано название препарата"}
+        return db_manager.get_drug_full_info(drug_name)
+
+
+class FindSynonymsHandler(BaseQueryHandler):
+    """Обработчик: поиск синонимов по МНН."""
+
+    def can_handle(self, intent: str) -> bool:
+        return intent == "find_synonyms"
+
+    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
+        mnn = entities.get("mnn") or entities.get("drug_name") or entities.get("substance")
+        if not mnn:
+            return {"error": "Не указано МНН (действующее вещество)"}
+        synonyms = db_manager.get_synonyms_by_mnn(mnn)
+        return {
+            "intent": "find_synonyms",
+            "query": mnn,
+            "count": len(synonyms),
+            "result": [s['TRADE_RFN'] for s in synonyms]
+        }
+
+
+class FindAnalogsHandler(BaseQueryHandler):
+    """Обработчик: поиск аналогов препарата."""
+
+    def can_handle(self, intent: str) -> bool:
+        return intent == "find_analog"
+
+    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
+        drug_name = entities.get("drug_name") or entities.get("drug")
+        if not drug_name:
+            return {"error": "Не указано название препарата"}
+        result = db_manager.get_analogs_by_drug(drug_name)
+        return {
+            "intent": "find_analog",
+            "query": drug_name,
+            "synonyms": result.get("synonyms", []),
+            "analogs": result.get("analogs", [])
+        }
 # --- 4. Ядро Агента (Мозг) ---
 class AgentCore:
     """
@@ -246,10 +406,9 @@ class AgentCore:
         # Реестр всех доступных сценариев обработки
         self.handlers: List[BaseQueryHandler] = [
             DiseaseToDrugHandler(),
-            # В будущем здесь появятся:
-            # FindAnalogHandler(),
-            # CheckInteractionHandler(),
-            # ...
+            DrugFullInfoHandler(),  # ← новый
+            FindSynonymsHandler(),  # ← новый
+            FindAnalogsHandler(),  # ← новый
         ]
         self.logger = logging.getLogger(__name__)
 
@@ -298,8 +457,8 @@ if __name__ == "__main__":
 
         # 4. Симуляция запроса от NLU
         # Представим, что NLU уже отработал и прислал нам:
-        test_intent = "find_drug_by_disease"
-        test_entities = {"disease": "грипп"}
+        test_intent = "find_analog"
+        test_entities = {"drug": "Омепразол"}
 
         print(f"\n--- Симуляция запроса ---")
         print(f"Intent: {test_intent}")
