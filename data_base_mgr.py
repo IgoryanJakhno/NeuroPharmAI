@@ -19,7 +19,6 @@ import logging
 # Предполагаем, что библиотека dbfread установлена: pip install dbfread
 from dbfread import DBF
 
-
 # --- 1. Менеджер Базы Данных (Библиотекарь) ---
 class DataBaseManager:
     """
@@ -55,127 +54,126 @@ class DataBaseManager:
             self.connection.close()
             self.logger.info("Соединение с БД лекарств закрыто.")
 
-    # Исправленные методы в классе DataBaseManager
+    def initialize_database(self, dbf_folder: str):
+        """Создаёт все таблицы и наполняет их данными из DBF."""
+        if not os.path.exists(dbf_folder):
+            raise FileNotFoundError(f"Папка {dbf_folder} не найдена")
 
-    def _create_tables_from_dbfs(self, dbf_folder: str):
-        """
-        Парсит структуру DBF-файлов и создает таблицы SQLite.
-        """
-        self.logger.info(f"Начинаем создание структуры БД из DBF в папке: {dbf_folder}")
+        dbf_files = [
+            'SICK.dbf', 'TRADE.dbf', 'INTER.dbf', 'SICK_TRADE.dbf',
+            'FIRM.dbf', 'COUNTRY.dbf', 'DRUGFORM.dbf', 'GENFORM.dbf',
+            'PRODFORM.dbf', 'MEDICINE.dbf', 'DRUGS.dbf',
+            'MASSUNIT.dbf', 'CUBEUNIT.dbf', 'CONCUNIT.dbf', 'UNITUNIT.dbf',
+            'CHE_OUT.dbf', 'PHARMGRP.dbf'
+        ]
 
-        # Таблица INTER — перечень МНН
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS INTER (
-                INTER_ID INTEGER PRIMARY KEY,
-                PHAGRP_ID INTEGER,
-                INTER_INN INTEGER,
-                INTER_RFN TEXT,
-                INVALID INTEGER DEFAULT 0
-            )
-        """)
-
-        # Таблица TRADE — торговые наименования
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS TRADE (
-                TRADE_ID INTEGER PRIMARY KEY,
-                INTER_ID INTEGER,
-                TRADE_RFN TEXT,
-                INVALID INTEGER DEFAULT 0
-            )
-        """)
-
-        # Таблица SICK — заболевания
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS SICK (
-                SICK_ID INTEGER PRIMARY KEY,
-                SICK_RFN TEXT
-            )
-        """)
-
-        # Таблица SICK_TRADE — связь заболеваний с торговыми наименованиями
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS SICK_TRADE (
-                SICKTRADE_ID INTEGER PRIMARY KEY,
-                SICK_ID INTEGER,
-                TRADE_ID INTEGER,
-                FOREIGN KEY (SICK_ID) REFERENCES SICK(SICK_ID),
-                FOREIGN KEY (TRADE_ID) REFERENCES TRADE(TRADE_ID)
-            )
-        """)
-
-        self.connection.commit()
-        self.logger.info("Структура таблиц создана.")
-
-    def _import_dbf_data(self, dbf_folder: str):
-        """
-        Импортирует данные из DBF-файлов в таблицы SQLite.
-        Гибко подходит к именам полей, проверяя их наличие.
-        """
-        self.logger.info("Начинаем импорт данных из DBF...")
-
-        dbf_files = {
-            'SICK': 'SICK.dbf',
-            'TRADE': 'TRADE.dbf',
-            'INTER': 'INTER.dbf',
-            'SICK_TRADE': 'SICK_TRADE.dbf'
-        }
-
-        for table_name, file_name in dbf_files.items():
+        for file_name in dbf_files:
             file_path = os.path.join(dbf_folder, file_name)
             if not os.path.exists(file_path):
-                self.logger.warning(f"Файл не найден: {file_path}")
+                self.logger.warning(f"Файл {file_name} пропущен (не найден)")
                 continue
-
-            self.logger.info(f"Импорт {file_name} в таблицу {table_name}...")
-            count = 0
-
+            table_name = os.path.splitext(file_name)[0]
             try:
-                for record in DBF(file_path, encoding='windows-1251'):
-                    # Нормализуем ключи: приводим к нижнему регистру
-                    normalized_record = {k.lower().strip(): v for k, v in record.items()}
-
-                    # Получаем структуру таблицы из SQLite
-                    self.cursor.execute(f"PRAGMA table_info({table_name})")
-                    table_columns = [col[1].lower() for col in self.cursor.fetchall()]
-
-                    # Оставляем только те поля, которые есть в таблице
-                    filtered_record = {k: v for k, v in normalized_record.items()
-                                       if k in table_columns}
-
-                    if not filtered_record:
-                        self.logger.warning(f"Нет совпадающих полей для записи в {table_name}")
-                        continue
-
-                    # Строим INSERT только с совпадающими полями
-                    columns = ', '.join(filtered_record.keys())
-                    placeholders = ', '.join(['?' for _ in filtered_record])
-                    sql = f"INSERT OR IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})"
-
-                    self.cursor.execute(sql, list(filtered_record.values()))
-                    count += 1
-
-                self.connection.commit()
-                self.logger.info(f"Импортировано {count} записей в {table_name}.")
-
+                self._create_table_from_dbf(table_name, file_path)
+                self._import_dbf_to_table(table_name, file_path)
             except Exception as e:
-                self.logger.error(f"Ошибка импорта {file_name}: {e}")
-                # Выводим структуру DBF для отладки
-                try:
-                    sample = next(iter(DBF(file_path, encoding='windows-1251')))
-                    self.logger.error(f"Поля DBF: {list(sample.keys())}")
-                    self.cursor.execute(f"PRAGMA table_info({table_name})")
-                    self.logger.error(f"Поля SQLite: {[col[1] for col in self.cursor.fetchall()]}")
-                except:
-                    pass
+                self.logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при обработке {file_name}: {e}", exc_info=True)
 
-    def initialize_database(self, dbf_folder: str):
-        """Полный цикл: создание таблиц и импорт данных."""
-        if not os.path.exists(dbf_folder):
-            self.logger.error(f"Папка с DBF не найдена: {dbf_folder}")
-            raise FileNotFoundError(f"Папка с DBF не найдена: {dbf_folder}")
+    def _create_table_from_dbf(self, table_name: str, dbf_path: str):
+        """Создаёт таблицу SQLite с колонками, в точности как в DBF."""
+        try:
+            dbf = DBF(dbf_path, encoding='windows-1251')
+            sample = next(iter(dbf))
 
-        self._create_tables_from_dbfs(dbf_folder)
-        self._import_dbf_data(dbf_folder)
+            # Собираем ВСЕ имена полей из первой записи
+            field_names = []
+            for field_name in sample.keys():
+                clean = field_name.strip()
+                if not clean:
+                    self.logger.warning(f"Пустое имя поля в {table_name}, пропускаем")
+                    continue
+                field_names.append(clean)
+
+            # Определяем, есть ли поле, которое можно сделать PRIMARY KEY
+            # Приоритет: поле, совпадающее с именем таблицы + _ID (например, DRUGS_ID для таблицы DRUGS)
+            # Если такого нет — берём первое поле, заканчивающееся на _ID
+            # Если и таких нет — PRIMARY KEY не будет (добавим rowid)
+            pk_field = None
+            expected_pk = f"{table_name}_ID"
+
+            for fname in field_names:
+                if fname.upper() == expected_pk.upper():
+                    pk_field = fname
+                    break
+
+            if not pk_field:
+                for fname in field_names:
+                    if fname.upper().endswith('_ID'):
+                        pk_field = fname
+                        break
+
+            # Строим определение колонок
+            columns_def = []
+            for fname in field_names:
+                if pk_field and fname.upper() == pk_field.upper():
+                    columns_def.append(f'"{fname}" INTEGER PRIMARY KEY')
+                else:
+                    columns_def.append(f'"{fname}" TEXT')
+
+            if not pk_field:
+                self.logger.warning(f"Таблица {table_name}: PRIMARY KEY не найден, будет использован rowid")
+
+            sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(columns_def)})"
+            self.cursor.execute(sql)
+            self.connection.commit()
+            self.logger.info(f"Таблица {table_name} создана ({len(columns_def)} колонок, PK: {pk_field or 'нет'})")
+
+        except Exception as e:
+            self.logger.error(f"Ошибка создания таблицы {table_name} из {dbf_path}: {e}")
+            raise
+
+    def _import_dbf_to_table(self, table_name: str, dbf_path: str):
+        """Импортирует все записи из DBF в соответствующую таблицу SQLite."""
+        self.logger.info(f"Импорт {os.path.basename(dbf_path)} -> {table_name}...")
+        count = 0
+        skipped_fields = set()
+        try:
+            # Получаем список колонок, которые РЕАЛЬНО есть в SQLite таблице
+            self.cursor.execute(f"PRAGMA table_info({table_name})")
+            existing_columns = {col[1].upper() for col in self.cursor.fetchall()}
+
+            dbf = DBF(dbf_path, encoding='windows-1251')
+
+            for record in dbf:
+                # Нормализуем имена полей из DBF
+                normalized = {}
+                for k, v in record.items():
+                    clean = k.strip()
+                    if not clean:
+                        continue
+                    # Проверяем, есть ли такая колонка в SQLite (без учёта регистра)
+                    if clean.upper() in existing_columns:
+                        normalized[clean] = v
+                    else:
+                        skipped_fields.add(clean)
+
+                if not normalized:
+                    continue
+
+                cols = ', '.join(f'"{k}"' for k in normalized.keys())
+                placeholders = ', '.join(['?'] * len(normalized))
+                sql = f"INSERT OR IGNORE INTO {table_name} ({cols}) VALUES ({placeholders})"
+                self.cursor.execute(sql, list(normalized.values()))
+                count += 1
+
+            self.connection.commit()
+            if skipped_fields:
+                self.logger.warning(f"Пропущены поля (отсутствуют в SQLite): {', '.join(skipped_fields)}")
+            self.logger.info(f"Импортировано {count} записей в {table_name}")
+
+        except Exception as e:
+            self.logger.error(f"Ошибка импорта {dbf_path}: {e}")
+            raise
 
     # --- Низкоуровневые методы поиска (то, что "дергает" Агент) ---
     def find_drugs_by_disease(self, disease_name: str) -> List[Dict[str, Any]]:
@@ -197,13 +195,9 @@ class DataBaseManager:
         return [dict(row) for row in results]
 
     def get_drug_full_info(self, trade_name: str) -> Dict[str, Any]:
-        """
-        Возвращает полную информацию о препарате по торговому названию.
-        Использует таблицы: TRADE, INTER, PHARMGRP, DRUGS, FIRM, COUNTRY.
-        """
         self.logger.info(f"Запрос полной информации о препарате: '{trade_name}'")
 
-        # Сначала найдем TRADE_ID по названию
+        # Находим TRADE_ID
         trade = self.cursor.execute(
             "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
             (f'%{trade_name}%',)
@@ -215,17 +209,18 @@ class DataBaseManager:
         trade_id = trade['TRADE_ID']
         inter_id = trade['INTER_ID']
 
-        # Получаем МНН
+        # МНН
         inter = self.cursor.execute(
             "SELECT INTER_RFN FROM INTER WHERE INTER_ID = ?",
             (inter_id,)
         ).fetchone()
 
-        # Получаем упаковки из DRUGS
+        # Упаковки через DRUGS + MEDICINE + FIRM + COUNTRY
         drugs = self.cursor.execute("""
-            SELECT d.DRUG_NAME, d.FORM_RFN, d.MED_DOSE, d.NOM_QTTY,
+            SELECT d.DRUG_NAME, m.MED_DOSE, d.FORM_RFN, d.NOM_QTTY,
                    f.FIRM_RFN, c.CNTRY_RFN, d.CHECK_DATE
             FROM DRUGS d
+            LEFT JOIN MEDICINE m ON d.MED_ID = m.MED_ID
             LEFT JOIN FIRM f ON d.FIRM_ID = f.FIRM_ID
             LEFT JOIN COUNTRY c ON d.CNTRY_ID = c.CNTRY_ID
             WHERE d.TRADE_ID = ? AND d.INVALID = 0
@@ -308,6 +303,154 @@ class DataBaseManager:
                 for row in same_group
             ]
         }
+    # ------------------ ФИЛЬТРЫ ДЛЯ ПРОДВИНУТОГО ПОЛЬЗОВАТЕЛЯ ------------------
+    def search_drugs_by_manufacturer(self, firm_name: str) -> Dict[str, Any]:
+        """Поиск препаратов по производителю."""
+        self.logger.info(f"Поиск препаратов производителя: '{firm_name}'")
+        query = """
+        SELECT DISTINCT t.TRADE_RFN, d.DRUG_NAME, f.FIRM_RFN
+        FROM DRUGS d
+        JOIN FIRM f ON d.FIRM_ID = f.FIRM_ID
+        JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
+        WHERE f.FIRM_RFN LIKE ? AND d.INVALID = 0 AND t.INVALID = 0
+        LIMIT 100
+        """
+        rows = self.cursor.execute(query, (f'%{firm_name}%',)).fetchall()
+        return {
+            "manufacturer": firm_name,
+            "count": len(rows),
+            "drugs": [dict(r) for r in rows]
+        }
+
+    def search_drugs_by_country(self, country_name: str) -> Dict[str, Any]:
+        """Поиск препаратов по стране производителя."""
+        self.logger.info(f"Поиск препаратов страны: '{country_name}'")
+        query = """
+        SELECT DISTINCT t.TRADE_RFN, d.DRUG_NAME, c.CNTRY_RFN
+        FROM DRUGS d
+        JOIN COUNTRY c ON d.CNTRY_ID = c.CNTRY_ID
+        JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
+        WHERE c.CNTRY_RFN LIKE ? AND d.INVALID = 0 AND t.INVALID = 0
+        LIMIT 100
+        """
+        rows = self.cursor.execute(query, (f'%{country_name}%',)).fetchall()
+        return {
+            "country": country_name,
+            "count": len(rows),
+            "drugs": [dict(r) for r in rows]
+        }
+
+    def search_drugs_by_form(self, form_name: str) -> Dict[str, Any]:
+        """
+        Поиск по лекарственной форме (например, "таблетки", "раствор").
+        Ищем в DRUGFORM и GENFORM.
+        """
+        self.logger.info(f"Поиск по лекарственной форме: '{form_name}'")
+        query = """
+        SELECT DISTINCT t.TRADE_RFN, d.DRUG_NAME, df.DRUGF_RFN, gf.GENF_RFN
+        FROM DRUGS d
+        JOIN DRUGFORM df ON d.DRUGF_ID = df.DRUGF_ID
+        LEFT JOIN GENFORM gf ON d.GENF_ID = gf.GENF_ID
+        JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
+        WHERE (df.DRUGF_RFN LIKE ? OR gf.GENF_RFN LIKE ?)
+          AND d.INVALID = 0 AND t.INVALID = 0
+        LIMIT 100
+        """
+        rows = self.cursor.execute(query, (f'%{form_name}%', f'%{form_name}%')).fetchall()
+        return {
+            "form": form_name,
+            "count": len(rows),
+            "drugs": [dict(r) for r in rows]
+        }
+
+    def search_drugs_by_dosage(self, dosage_value: float, unit: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Поиск препаратов по дозировке. При указании единицы измерения пытается
+        учесть связь с соответствующей таблицей единиц.
+        """
+        self.logger.info(f"Поиск по дозировке: {dosage_value} {unit or ''}")
+        results = []
+
+        # 1. Поиск по текстовому полю MED_DOSE (в таблице MEDICINE)
+        # Предполагаем, что dosage_value передаётся как число, но ищем текстовое вхождение
+        if unit:
+            pattern = f"%{dosage_value}%{unit}%"
+        else:
+            pattern = f"%{dosage_value}%"
+        rows_dose = self.cursor.execute("""
+            SELECT DISTINCT t.TRADE_RFN, m.MED_NAME, m.MED_DOSE
+            FROM MEDICINE m
+            JOIN DRUGS d ON d.MED_ID = m.MED_ID
+            JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
+            WHERE m.MED_DOSE LIKE ? AND d.INVALID = 0
+            LIMIT 50
+        """, (pattern,)).fetchall()
+        results.extend([dict(r) for r in rows_dose])
+
+        # 2. Поиск по числовым полям в DRUGS с учётом единиц
+        # Если unit задан, пытаемся определить, к какому типу относится (масса, объём, концентрация, ед. действия)
+        # Для простоты ищем во всех числовых полях с LIKE по соответствующей единице
+        if unit:
+            # Пытаемся найти подходящий ID единицы в справочниках
+            mass_ids = []
+            cube_ids = []
+            conc_ids = []
+            unit_ids = []
+            for row in self.cursor.execute("SELECT MASS_ID FROM MASSUNIT WHERE MASS_RFN LIKE ?", (f'%{unit}%',)):
+                mass_ids.append(row['MASS_ID'])
+            for row in self.cursor.execute("SELECT CUBE_ID FROM CUBEUNIT WHERE CUBE_RFN LIKE ?", (f'%{unit}%',)):
+                cube_ids.append(row['CUBE_ID'])
+            for row in self.cursor.execute("SELECT CONC_ID FROM CONCUNIT WHERE CONC_RFN LIKE ?", (f'%{unit}%',)):
+                conc_ids.append(row['CONC_ID'])
+            for row in self.cursor.execute("SELECT UNIT_ID FROM UNITUNIT WHERE UNIT_RFN LIKE ?", (f'%{unit}%',)):
+                unit_ids.append(row['UNIT_ID'])
+
+            # Теперь ищем препараты, где значение и единица совпадают
+            queries = []
+            params = []
+            if mass_ids:
+                queries.append("(d.AMASS_QTTY = ? AND d.AMASS_ID IN ({}))".format(','.join(['?']*len(mass_ids))))
+                params.extend([dosage_value] + mass_ids)
+            if cube_ids:
+                queries.append("(d.CUBE_QTTY = ? AND d.CUBE_ID IN ({}))".format(','.join(['?']*len(cube_ids))))
+                params.extend([dosage_value] + cube_ids)
+            if conc_ids:
+                queries.append("(d.CONC_QTTY = ? AND d.CONC_ID IN ({}))".format(','.join(['?']*len(conc_ids))))
+                params.extend([dosage_value] + conc_ids)
+            if unit_ids:
+                queries.append("(d.UNIT_QTTY = ? AND d.UNIT_ID IN ({}))".format(','.join(['?']*len(unit_ids))))
+                params.extend([dosage_value] + unit_ids)
+
+            if queries:
+                combined = " OR ".join(queries)
+                sql = f"""
+                    SELECT DISTINCT t.TRADE_RFN, d.DRUG_NAME
+                    FROM DRUGS d
+                    JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
+                    WHERE ({combined}) AND d.INVALID = 0
+                    LIMIT 50
+                """
+                rows_units = self.cursor.execute(sql, params).fetchall()
+                results.extend([dict(r) for r in rows_units])
+        else:
+            # Ищем просто по числовым полям без привязки к единице
+            rows_num = self.cursor.execute("""
+                SELECT DISTINCT t.TRADE_RFN, d.DRUG_NAME
+                FROM DRUGS d
+                JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
+                WHERE (d.AMASS_QTTY = ? OR d.CUBE_QTTY = ? OR d.CONC_QTTY = ? OR d.UNIT_QTTY = ? OR d.DOSE_QTTY = ?)
+                  AND d.INVALID = 0
+                LIMIT 50
+            """, (dosage_value,)*5).fetchall()
+            results.extend([dict(r) for r in rows_num])
+
+        # Убираем дубликаты
+        unique = {r.get('TRADE_RFN') or r.get('DRUG_NAME'): r for r in results}
+        return {
+            "dosage": f"{dosage_value} {unit or ''}",
+            "count": len(unique),
+            "drugs": list(unique.values())
+        }
 
 # --- 2. Абстрактный обработчик запросов ---
 class BaseQueryHandler(ABC):
@@ -376,7 +519,6 @@ class FindSynonymsHandler(BaseQueryHandler):
             "result": [s['TRADE_RFN'] for s in synonyms]
         }
 
-
 class FindAnalogsHandler(BaseQueryHandler):
     """Обработчик: поиск аналогов препарата."""
 
@@ -394,6 +536,49 @@ class FindAnalogsHandler(BaseQueryHandler):
             "synonyms": result.get("synonyms", []),
             "analogs": result.get("analogs", [])
         }
+
+class ManufacturerFilterHandler(BaseQueryHandler):
+    def can_handle(self, intent: str) -> bool:
+        return intent == "filter_by_manufacturer"
+
+    def handle(self, entities, db_manager):
+        firm = entities.get("manufacturer") or entities.get("firm")
+        if not firm:
+            return {"error": "Не указан производитель"}
+        return db_manager.search_drugs_by_manufacturer(firm)
+
+class CountryFilterHandler(BaseQueryHandler):
+    def can_handle(self, intent: str) -> bool:
+        return intent == "filter_by_country"
+
+    def handle(self, entities, db_manager):
+        country = entities.get("country")
+        if not country:
+            return {"error": "Не указана страна"}
+        return db_manager.search_drugs_by_country(country)
+
+class FormFilterHandler(BaseQueryHandler):
+    def can_handle(self, intent: str) -> bool:
+        return intent == "filter_by_form"
+
+    def handle(self, entities, db_manager):
+        form = entities.get("form") or entities.get("drug_form")
+        if not form:
+            return {"error": "Не указана лекарственная форма"}
+        return db_manager.search_drugs_by_form(form)
+
+class DosageFilterHandler(BaseQueryHandler):
+    def can_handle(self, intent: str) -> bool:
+        return intent == "filter_by_dosage"
+
+    def handle(self, entities, db_manager):
+        try:
+            value = float(entities.get("dosage_value"))
+        except (TypeError, ValueError):
+            return {"error": "Некорректное числовое значение дозировки"}
+        unit = entities.get("unit")  # может отсутствовать
+        return db_manager.search_drugs_by_dosage(value, unit)
+
 # --- 4. Ядро Агента (Мозг) ---
 class AgentCore:
     """
@@ -404,11 +589,15 @@ class AgentCore:
     def __init__(self, db_manager: DataBaseManager):
         self.db = db_manager
         # Реестр всех доступных сценариев обработки
-        self.handlers: List[BaseQueryHandler] = [
+        self.handlers = [
             DiseaseToDrugHandler(),
-            DrugFullInfoHandler(),  # ← новый
-            FindSynonymsHandler(),  # ← новый
-            FindAnalogsHandler(),  # ← новый
+            DrugFullInfoHandler(),
+            FindSynonymsHandler(),
+            FindAnalogsHandler(),
+            ManufacturerFilterHandler(),
+            CountryFilterHandler(),
+            FormFilterHandler(),
+            DosageFilterHandler(),
         ]
         self.logger = logging.getLogger(__name__)
 
@@ -431,53 +620,57 @@ class AgentCore:
         return {"error": f"Не могу обработать запрос типа '{intent}'"}
 
 
-# ============= БЛОК ТЕСТИРОВАНИЯ =============
-if __name__ == "__main__":
-    # Настройка логгера для тестов
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__)
-
-    print("=" * 60)
-    print("ТЕСТИРОВАНИЕ ЯДРА АГЕНТА И МЕНЕДЖЕРА БД")
-    print("=" * 60)
-
-    # 1. Инициализация
-    DBF_FOLDER = "egk_extend306"
-    db_manager = DataBaseManager()
-
-    try:
-        # 2. Загрузка данных (только при первом запуске или если БД нет)
-        # В реальном приложении здесь будет проверка даты обновления и т.д.
-        logger.info("Пытаемся инициализировать БД лекарств из DBF...")
-        db_manager.initialize_database(DBF_FOLDER)
-        logger.info("База данных готова к работе.")
-
-        # 3. Создаем ядро агента
-        agent = AgentCore(db_manager)
-
-        # 4. Симуляция запроса от NLU
-        # Представим, что NLU уже отработал и прислал нам:
-        test_intent = "find_analog"
-        test_entities = {"drug": "Омепразол"}
-
-        print(f"\n--- Симуляция запроса ---")
-        print(f"Intent: {test_intent}")
-        print(f"Entities: {test_entities}")
-        print("-" * 30)
-
-        # 5. Запуск ядра агента
-        response = agent.process_query(test_intent, test_entities)
-
-        # 6. Вывод результата
-        print("Результат обработки запроса (JSON):")
-        print(json.dumps(response, ensure_ascii=False, indent=2))
-
-    except FileNotFoundError as e:
-        logger.error(f"Критическая ошибка: {e}")
-        logger.info("Создайте папку 'egk_extend306' и поместите туда DBF-файлы для продолжения.")
-    except Exception as e:
-        logger.exception("Произошла непредвиденная ошибка.")
-    finally:
-        # 7. Закрываем соединение с БД
-        if db_manager:
-            db_manager.close()
+# # ============= БЛОК ТЕСТИРОВАНИЯ =============
+# if __name__ == "__main__":
+#     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+#     logger = logging.getLogger(__name__)
+#
+#     print("=" * 60)
+#     print("ТЕСТИРОВАНИЕ ЯДРА АГЕНТА И МЕНЕДЖЕРА БД")
+#     print("=" * 60)
+#
+#     DBF_FOLDER = "egk_extend306"
+#     db_manager = DataBaseManager()
+#
+#     try:
+#         logger.info("Инициализация БД (создание таблиц и импорт)...")
+#         db_manager.initialize_database(DBF_FOLDER)
+#         logger.info("База данных готова к работе.")
+#
+#         existing_tables = db_manager.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+#         logger.info(f"Таблиц в БД: {len(existing_tables)}")
+#         for t in existing_tables:
+#             logger.info(f"  - {t['name']}")
+#
+#         agent = AgentCore(db_manager)
+#
+#         # Список тестов: описание, intent, entities
+#         tests = [
+#             ("Поиск лекарств по болезни", "find_drug_by_disease", {"disease": "Грипп"}),
+#             ("Полная информация о препарате", "get_drug_info", {"drug_name": "Анальгин"}),
+#             ("Синонимы по МНН", "find_synonyms", {"mnn": "Парацетамол"}),
+#             ("Аналоги препарата", "find_analog", {"drug": "Нурофен"}),
+#             ("Фильтр по производителю", "filter_by_manufacturer", {"manufacturer": "Байер"}),
+#             ("Фильтр по стране", "filter_by_country", {"country": "Германия"}),
+#             ("Фильтр по лекарственной форме", "filter_by_form", {"form": "таблетки"}),
+#             ("Фильтр по дозировке (500 мг)", "filter_by_dosage", {"dosage_value": "500", "unit": "мг"}),
+#             ("Фильтр по дозировке без единицы", "filter_by_dosage", {"dosage_value": "500"}),
+#         ]
+#
+#         for desc, intent, entities in tests:
+#             print(f"\n{'=' * 40}")
+#             print(f"Тест: {desc}")
+#             print(f"Intent: {intent}, Entities: {entities}")
+#             print("-" * 30)
+#             response = agent.process_query(intent, entities)
+#             print("Результат:")
+#             print(json.dumps(response, ensure_ascii=False, indent=2))
+#
+#     except FileNotFoundError as e:
+#         logger.error(f"Критическая ошибка: {e}")
+#         print("Поместите DBF-файлы в папку egk_extend306.")
+#     except Exception as e:
+#         logger.exception("Непредвиденная ошибка")
+#     finally:
+#         if db_manager:
+#             db_manager.close()
