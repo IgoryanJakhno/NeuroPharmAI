@@ -312,7 +312,7 @@ class QueryParser:
                 if len(parts) == 2:
                     entities["drug_name"] = parts[0].strip().strip('?').strip('!').capitalize()
                     entities["drug_name2"] = parts[1].strip().strip('?').strip('!').capitalize()
-                    
+
         # Фильтр по производителю
         if intent == "filter_by_manufacturer":
             firm = self._extract_entity_by_pattern(clean_text, tokens,
