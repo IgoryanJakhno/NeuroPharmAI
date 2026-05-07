@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import logging
+from query_parser import QueryParser
 
 # Предполагаем, что библиотека dbfread установлена: pip install dbfread
 from dbfread import DBF
@@ -619,6 +620,24 @@ class AgentCore:
         self.logger.warning(f"AgentCore: Не найден обработчик для intent='{intent}'")
         return {"error": f"Не могу обработать запрос типа '{intent}'"}
 
+    def process_raw_query(self, user_text: str) -> Dict[str, Any]:
+        """
+        Принимает сырой текст от пользователя, разбирает его через QueryParser
+        и передаёт в process_query.
+
+        Это единая точка входа для GUI.
+        """
+        parser = QueryParser()
+        parsed = parser.parse_query(user_text)
+
+        if parsed.get("error"):
+            return parsed
+
+        intent = parsed.get("intent")
+        entities = parsed.get("entities", {})
+
+        self.logger.info(f"Разобран запрос: intent='{intent}', entities={entities}")
+        return self.process_query(intent, entities)
 
 # # ============= БЛОК ТЕСТИРОВАНИЯ =============
 # if __name__ == "__main__":
