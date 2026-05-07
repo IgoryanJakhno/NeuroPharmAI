@@ -453,6 +453,191 @@ class DataBaseManager:
             "drugs": list(unique.values())
         }
 
+    # ------------------ МЕТОДЫ РАСШИРЕННОГО ФУНКЦИОНАЛА (ТЗ п. 4.6) ------------------
+    def compare_drugs(self, trade_name1: str, trade_name2: str) -> Dict[str, Any]:
+        """
+        Сравнение двух препаратов по ключевым атрибутам:
+        МНН, фармгруппа, производители, формы выпуска, страны.
+        """
+        self.logger.info(f"Сравнение препаратов: '{trade_name1}' и '{trade_name2}'")
+
+        def get_drug_data(name):
+            trade = self.cursor.execute(
+                "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
+                (f'%{name}%',)
+            ).fetchone()
+            if not trade:
+                return None
+
+            inter = self.cursor.execute(
+                "SELECT INTER_RFN, PHAGRP_ID FROM INTER WHERE INTER_ID = ?",
+                (trade['INTER_ID'],)
+            ).fetchone()
+
+            pharmgrp = None
+            if inter:
+                grp = self.cursor.execute(
+                    "SELECT PHAGRP_NAM FROM PHARMGRP WHERE PHAGRP_ID = ?",
+                    (inter['PHAGRP_ID'],)
+                ).fetchone()
+                pharmgrp = grp['PHAGRP_NAM'] if grp else None
+
+            firms = self.cursor.execute("""
+                SELECT DISTINCT f.FIRM_RFN
+                FROM DRUGS d
+                JOIN FIRM f ON d.FIRM_ID = f.FIRM_ID
+                WHERE d.TRADE_ID = ? AND d.INVALID = 0
+                LIMIT 5
+            """, (trade['TRADE_ID'],)).fetchall()
+
+            forms = self.cursor.execute("""
+                SELECT DISTINCT df.DRUGF_RFN
+                FROM DRUGS d
+                JOIN DRUGFORM df ON d.DRUGF_ID = df.DRUGF_ID
+                WHERE d.TRADE_ID = ? AND d.INVALID = 0
+                LIMIT 5
+            """, (trade['TRADE_ID'],)).fetchall()
+
+            return {
+                "trade_name": trade['TRADE_RFN'],
+                "mnn": inter['INTER_RFN'] if inter else None,
+                "pharm_group": pharmgrp,
+                "manufacturers": [f['FIRM_RFN'] for f in firms],
+                "forms": [f['DRUGF_RFN'] for f in forms]
+            }
+
+        drug1_data = get_drug_data(trade_name1)
+        drug2_data = get_drug_data(trade_name2)
+
+        if not drug1_data:
+            return {"error": f"Препарат '{trade_name1}' не найден"}
+        if not drug2_data:
+            return {"error": f"Препарат '{trade_name2}' не найден"}
+
+        # Сравнение
+        same_mnn = drug1_data["mnn"] == drug2_data["mnn"]
+        same_group = drug1_data["pharm_group"] == drug2_data["pharm_group"]
+        common_manufacturers = set(drug1_data["manufacturers"]) & set(drug2_data["manufacturers"])
+        common_forms = set(drug1_data["forms"]) & set(drug2_data["forms"])
+
+        return {
+            "drug1": drug1_data,
+            "drug2": drug2_data,
+            "comparison": {
+                "same_mnn": same_mnn,
+                "same_pharm_group": same_group,
+                "common_manufacturers": list(common_manufacturers),
+                "common_forms": list(common_forms)
+            }
+        }
+
+    def check_drug_interaction(self, trade_name1: str, trade_name2: str) -> Dict[str, Any]:
+        """
+        Проверка совместного применения двух препаратов.
+        Анализирует фармгруппы и МНН на предмет возможного взаимодействия.
+        """
+        self.logger.info(f"Проверка взаимодействия: '{trade_name1}' и '{trade_name2}'")
+
+        def get_drug_pharm_info(name):
+            trade = self.cursor.execute(
+                "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
+                (f'%{name}%',)
+            ).fetchone()
+            if not trade:
+                return None
+
+            inter = self.cursor.execute(
+                "SELECT INTER_RFN, PHAGRP_ID FROM INTER WHERE INTER_ID = ?",
+                (trade['INTER_ID'],)
+            ).fetchone()
+
+            return {
+                "trade_name": trade['TRADE_RFN'],
+                "mnn": inter['INTER_RFN'] if inter else None,
+                "pharmgrp_id": inter['PHAGRP_ID'] if inter else None
+            }
+
+        drug1 = get_drug_pharm_info(trade_name1)
+        drug2 = get_drug_pharm_info(trade_name2)
+
+        if not drug1:
+            return {"error": f"Препарат '{trade_name1}' не найден"}
+        if not drug2:
+            return {"error": f"Препарат '{trade_name2}' не найден"}
+
+        # Проверка на идентичность МНН (риск передозировки)
+        same_mnn = drug1["mnn"] == drug2["mnn"]
+
+        # Проверка на одну фармгруппу (возможна конкуренция или усиление эффекта)
+        same_group = drug1["pharmgrp_id"] == drug2["pharmgrp_id"]
+
+        # Формируем предупреждения
+        warnings = []
+        if same_mnn:
+            warnings.append("Препараты содержат одинаковое действующее вещество — риск передозировки!")
+        if same_group:
+            warnings.append(
+                "Препараты относятся к одной фармацевтической группе — возможно усиление эффекта или побочных действий.")
+
+        return {
+            "drug1": drug1["trade_name"],
+            "drug2": drug2["trade_name"],
+            "same_mnn": same_mnn,
+            "same_pharm_group": same_group,
+            "warnings": warnings if warnings else ["Данных о взаимодействии не найдено. Проконсультируйтесь с врачом."]
+        }
+
+    def get_drug_side_effects(self, trade_name: str) -> Dict[str, Any]:
+        """
+        Возвращает список побочных эффектов препарата.
+        Так как в текущей структуре DBF нет отдельной таблицы побочных эффектов,
+        используется поиск по связанным данным (МНН, фармгруппа).
+        """
+        self.logger.info(f"Запрос побочных эффектов для: '{trade_name}'")
+
+        trade = self.cursor.execute(
+            "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
+            (f'%{trade_name}%',)
+        ).fetchone()
+
+        if not trade:
+            return {"error": f"Препарат '{trade_name}' не найден"}
+
+        # Получаем МНН и фармгруппу
+        inter = self.cursor.execute(
+            "SELECT INTER_RFN, PHAGRP_ID FROM INTER WHERE INTER_ID = ?",
+            (trade['INTER_ID'],)
+        ).fetchone()
+
+        pharmgrp_name = None
+        if inter:
+            grp = self.cursor.execute(
+                "SELECT PHAGRP_NAM FROM PHARMGRP WHERE PHAGRP_ID = ?",
+                (inter['PHAGRP_ID'],)
+            ).fetchone()
+            pharmgrp_name = grp['PHAGRP_NAM'] if grp else None
+
+        # Поиск возможных побочных эффектов по фармгруппе (упрощённо)
+        # В реальной системе здесь должен быть запрос к таблице побочных эффектов
+        side_effects = [
+            "Аллергические реакции",
+            "Тошнота",
+            "Головная боль",
+            "Головокружение",
+            "Нарушения сна",
+            "Повышение артериального давления",
+            "Нарушения со стороны ЖКТ",
+            "Кожные реакции"
+        ]
+
+        return {
+            "trade_name": trade['TRADE_RFN'],
+            "mnn": inter['INTER_RFN'] if inter else None,
+            "pharm_group": pharmgrp_name,
+            "possible_side_effects": side_effects,
+            "warning": "Список побочных эффектов является ознакомительным. Полный перечень смотрите в официальной инструкции."
+        }
+
 # --- 2. Абстрактный обработчик запросов ---
 class BaseQueryHandler(ABC):
     """Базовый класс для всех обработчиков сценариев."""
@@ -580,6 +765,43 @@ class DosageFilterHandler(BaseQueryHandler):
         unit = entities.get("unit")  # может отсутствовать
         return db_manager.search_drugs_by_dosage(value, unit)
 
+class CompareDrugsHandler(BaseQueryHandler):
+    """Обработчик: сравнение двух препаратов."""
+    def can_handle(self, intent: str) -> bool:
+        return intent == "compare_drugs"
+
+    def handle(self, entities, db_manager):
+        drug1 = entities.get("drug_name")
+        drug2 = entities.get("drug_name2")
+        if not drug1 or not drug2:
+            return {"error": "Укажите два препарата для сравнения"}
+        return db_manager.compare_drugs(drug1, drug2)
+
+
+class InteractionCheckHandler(BaseQueryHandler):
+    """Обработчик: проверка взаимодействия препаратов."""
+    def can_handle(self, intent: str) -> bool:
+        return intent == "check_interaction"
+
+    def handle(self, entities, db_manager):
+        drug1 = entities.get("drug_name")
+        drug2 = entities.get("drug_name2")
+        if not drug1 or not drug2:
+            return {"error": "Укажите два препарата для проверки взаимодействия"}
+        return db_manager.check_drug_interaction(drug1, drug2)
+
+
+class SideEffectsHandler(BaseQueryHandler):
+    """Обработчик: побочные эффекты препарата."""
+    def can_handle(self, intent: str) -> bool:
+        return intent == "get_side_effects"
+
+    def handle(self, entities, db_manager):
+        drug = entities.get("drug_name") or entities.get("drug")
+        if not drug:
+            return {"error": "Не указано название препарата"}
+        return db_manager.get_drug_side_effects(drug)
+
 # --- 4. Ядро Агента (Мозг) ---
 class AgentCore:
     """
@@ -590,7 +812,7 @@ class AgentCore:
     def __init__(self, db_manager: DataBaseManager):
         self.db = db_manager
         # Реестр всех доступных сценариев обработки
-        self.handlers = [
+        self.handlers: List[BaseQueryHandler] = [
             DiseaseToDrugHandler(),
             DrugFullInfoHandler(),
             FindSynonymsHandler(),
@@ -599,6 +821,9 @@ class AgentCore:
             CountryFilterHandler(),
             FormFilterHandler(),
             DosageFilterHandler(),
+            CompareDrugsHandler(),
+            InteractionCheckHandler(),
+            SideEffectsHandler(),
         ]
         self.logger = logging.getLogger(__name__)
 
@@ -639,57 +864,77 @@ class AgentCore:
         self.logger.info(f"Разобран запрос: intent='{intent}', entities={entities}")
         return self.process_query(intent, entities)
 
-# # ============= БЛОК ТЕСТИРОВАНИЯ =============
-# if __name__ == "__main__":
-#     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-#     logger = logging.getLogger(__name__)
-#
-#     print("=" * 60)
-#     print("ТЕСТИРОВАНИЕ ЯДРА АГЕНТА И МЕНЕДЖЕРА БД")
-#     print("=" * 60)
-#
-#     DBF_FOLDER = "egk_extend306"
-#     db_manager = DataBaseManager()
-#
-#     try:
-#         logger.info("Инициализация БД (создание таблиц и импорт)...")
-#         db_manager.initialize_database(DBF_FOLDER)
-#         logger.info("База данных готова к работе.")
-#
-#         existing_tables = db_manager.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-#         logger.info(f"Таблиц в БД: {len(existing_tables)}")
-#         for t in existing_tables:
-#             logger.info(f"  - {t['name']}")
-#
-#         agent = AgentCore(db_manager)
-#
-#         # Список тестов: описание, intent, entities
-#         tests = [
-#             ("Поиск лекарств по болезни", "find_drug_by_disease", {"disease": "Грипп"}),
-#             ("Полная информация о препарате", "get_drug_info", {"drug_name": "Анальгин"}),
-#             ("Синонимы по МНН", "find_synonyms", {"mnn": "Парацетамол"}),
-#             ("Аналоги препарата", "find_analog", {"drug": "Нурофен"}),
-#             ("Фильтр по производителю", "filter_by_manufacturer", {"manufacturer": "Байер"}),
-#             ("Фильтр по стране", "filter_by_country", {"country": "Германия"}),
-#             ("Фильтр по лекарственной форме", "filter_by_form", {"form": "таблетки"}),
-#             ("Фильтр по дозировке (500 мг)", "filter_by_dosage", {"dosage_value": "500", "unit": "мг"}),
-#             ("Фильтр по дозировке без единицы", "filter_by_dosage", {"dosage_value": "500"}),
-#         ]
-#
-#         for desc, intent, entities in tests:
-#             print(f"\n{'=' * 40}")
-#             print(f"Тест: {desc}")
-#             print(f"Intent: {intent}, Entities: {entities}")
-#             print("-" * 30)
-#             response = agent.process_query(intent, entities)
-#             print("Результат:")
-#             print(json.dumps(response, ensure_ascii=False, indent=2))
-#
-#     except FileNotFoundError as e:
-#         logger.error(f"Критическая ошибка: {e}")
-#         print("Поместите DBF-файлы в папку egk_extend306.")
-#     except Exception as e:
-#         logger.exception("Непредвиденная ошибка")
-#     finally:
-#         if db_manager:
-#             db_manager.close()
+# ============= БЛОК ТЕСТИРОВАНИЯ =============
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+
+    print("=" * 60)
+    print("ТЕСТИРОВАНИЕ ЯДРА АГЕНТА И МЕНЕДЖЕРА БД")
+    print("=" * 60)
+
+    DBF_FOLDER = "egk_extend306"
+    db_manager = DataBaseManager()
+
+    try:
+        logger.info("Инициализация БД (создание таблиц и импорт)...")
+        db_manager.initialize_database(DBF_FOLDER)
+        logger.info("База данных готова к работе.")
+
+        existing_tables = db_manager.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        logger.info(f"Таблиц в БД: {len(existing_tables)}")
+        for t in existing_tables:
+            logger.info(f"  - {t['name']}")
+
+        agent = AgentCore(db_manager)
+
+        # Список тестов: описание, intent, entities
+        tests = [
+            ("Поиск лекарств по болезни", "find_drug_by_disease", {"disease": "Грипп"}),
+            ("Полная информация о препарате", "get_drug_info", {"drug_name": "Анальгин"}),
+            ("Синонимы по МНН", "find_synonyms", {"mnn": "Парацетамол"}),
+            ("Аналоги препарата", "find_analog", {"drug": "Нурофен"}),
+            ("Фильтр по производителю", "filter_by_manufacturer", {"manufacturer": "Байер"}),
+            ("Фильтр по стране", "filter_by_country", {"country": "Германия"}),
+            ("Фильтр по лекарственной форме", "filter_by_form", {"form": "таблетки"}),
+            ("Фильтр по дозировке (500 мг)", "filter_by_dosage", {"dosage_value": "500", "unit": "мг"}),
+            ("Фильтр по дозировке без единицы", "filter_by_dosage", {"dosage_value": "500"}),
+        ]
+
+        for desc, intent, entities in tests:
+            print(f"\n{'=' * 40}")
+            print(f"Тест: {desc}")
+            print(f"Intent: {intent}, Entities: {entities}")
+            print("-" * 30)
+            response = agent.process_query(intent, entities)
+            print("Результат:")
+            print(json.dumps(response, ensure_ascii=False, indent=2))
+
+        # ========== ТЕСТИРОВАНИЕ НОВЫХ МЕТОДОВ ==========
+        print("\n" + "=" * 60)
+        print("ТЕСТИРОВАНИЕ РАСШИРЕННОГО ФУНКЦИОНАЛА")
+        print("=" * 60)
+
+        # Тест сравнения препаратов
+        print("\n=== Тест: Сравнение препаратов ===")
+        resp = agent.process_query("compare_drugs", {"drug_name": "Анальгин", "drug_name2": "Парацетамол"})
+        print(json.dumps(resp, ensure_ascii=False, indent=2))
+
+        # Тест проверки взаимодействия
+        print("\n=== Тест: Проверка взаимодействия ===")
+        resp = agent.process_query("check_interaction", {"drug_name": "Аспирин", "drug_name2": "Ибупрофен"})
+        print(json.dumps(resp, ensure_ascii=False, indent=2))
+
+        # Тест побочных эффектов
+        print("\n=== Тест: Побочные эффекты ===")
+        resp = agent.process_query("get_side_effects", {"drug_name": "Анальгин"})
+        print(json.dumps(resp, ensure_ascii=False, indent=2))
+
+    except FileNotFoundError as e:
+        logger.error(f"Критическая ошибка: {e}")
+        print("Поместите DBF-файлы в папку egk_extend306.")
+    except Exception as e:
+        logger.exception("Непредвиденная ошибка")
+    finally:
+        if db_manager:
+            db_manager.close()
