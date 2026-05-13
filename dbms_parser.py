@@ -8,6 +8,7 @@
 """
 
 import logging
+import json
 from typing import Dict, Any, List, Optional
 
 
@@ -30,21 +31,12 @@ class DBMSParser:
     def format_response(self, response: Dict[str, Any]) -> str:
         """
         Основной метод — форматирует JSON-ответ в читаемый текст.
-
-        Args:
-            response: JSON-ответ от AgentCore.process_query().
-
-        Returns:
-            Отформатированная строка на русском языке.
         """
-        # Проверка на ошибки
         if "error" in response:
             return self._format_error(response["error"])
 
-        # Определяем intent для выбора шаблона
         intent = response.get("intent", "")
 
-        # Словарь соответствия intent → метод форматирования
         formatters = {
             "find_drug_by_disease": self._format_drugs_by_disease,
             "get_drug_info": self._format_drug_full_info,
@@ -62,11 +54,10 @@ class DBMSParser:
         formatter = formatters.get(intent)
         if formatter:
             result = formatter(response)
-            self.logger.info(f"DBMSParser: Ответ для intent '{intent}' сформирован")
             return result + self.disclaimer
         else:
-            self.logger.warning(f"DBMSParser: Неизвестный intent '{intent}', возврат как есть")
-            return str(response) + self.disclaimer
+            # Если intent не распознан, возвращаем JSON как есть, но красиво
+            return json.dumps(response, ensure_ascii=False, indent=2) + self.disclaimer
 
     def _format_error(self, error_msg: str) -> str:
         """Форматирование сообщения об ошибке."""

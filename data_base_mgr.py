@@ -56,9 +56,15 @@ class DataBaseManager:
             self.logger.info("Соединение с БД лекарств закрыто.")
 
     def initialize_database(self, dbf_folder: str):
-        """Создаёт все таблицы и наполняет их данными из DBF."""
+        """Создаёт все таблицы и наполняет их данными из DBF (однократно)."""
         if not os.path.exists(dbf_folder):
             raise FileNotFoundError(f"Папка {dbf_folder} не найдена")
+
+        # Проверяем, есть ли уже таблица DRUGS (признак завершённой инициализации)
+        self.cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='DRUGS'")
+        if self.cursor.fetchone():
+            self.logger.info("База данных уже инициализирована, пропускаем импорт.")
+            return
 
         dbf_files = [
             'SICK.dbf', 'TRADE.dbf', 'INTER.dbf', 'SICK_TRADE.dbf',
