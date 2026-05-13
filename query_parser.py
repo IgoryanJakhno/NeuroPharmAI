@@ -579,43 +579,84 @@ class QueryParser:
         filtered = [w for w in words if w.lower() not in STOP_WORDS and len(w) > 1]
         return ' '.join(filtered).strip()
 
+    @staticmethod
+    def export_to_json(filepath: str = "prompt_templates.json") -> None:
+        """
+        Экспортирует текущие настройки и словари в JSON-файл.
+        Используется администратором для синхронизации.
+        """
+        import json
+
+        data = {
+            "_description": "Экспортированные настройки QueryParser",
+            "_exported_at": datetime.now().isoformat(),
+            "intents": {}
+        }
+
+        for intent, triggers in INTENT_TRIGGERS.items():
+            data["intents"][intent] = {
+                "triggers": triggers,
+                "required_entities": QueryParser._get_required_entities_static(intent)
+            }
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        logging.getLogger(__name__).info(f"Настройки экспортированы в {filepath}")
+
+    @staticmethod
+    def _get_required_entities_static(intent: str) -> List[str]:
+        """Вспомогательный статический метод для экспорта."""
+        required_map = {
+            "find_drug_by_disease": ["disease"],
+            "get_drug_info": ["drug_name"],
+            "find_synonyms": [],
+            "find_analog": ["drug_name"],
+            "filter_by_manufacturer": ["manufacturer"],
+            "filter_by_country": ["country"],
+            "filter_by_form": ["form"],
+            "filter_by_dosage": ["dosage_value"],
+            "check_interaction": ["drug_name", "drug_name2"],
+            "compare_drugs": ["drug_name", "drug_name2"],
+        }
+        return required_map.get(intent, [])
 
 # ============= ТЕСТОВЫЙ БЛОК =============
-if __name__ == "__main__":
-    # Настройка логирования для тестов
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    parser = QueryParser()
-
-    test_queries = [
-        "Найди мне аналоги Азитромицина дозировкой до 100 мг",
-        "Чем заменить Нурофен?",
-        "Расскажи подробнее о Парацетамоле",
-        "Какие есть синонимы у Ибупрофена?",
-        "Найди препараты от гриппа",
-        "Покажи лекарства производителя Байер",
-        "Какие препараты производятся в Германии?",
-        "Найди таблетки от головной боли",
-        "Можно ли принимать Аспирин и Ибупрофен вместе?",
-        "Сравни Анальгин и Парацетамол",
-        "Найди препараты с дозировкой 500 мг",
-        "",  # пустой запрос
-        "???"  # некорректный запрос
-    ]
-
-    print("=" * 60)
-    print("ТЕСТИРОВАНИЕ QUERYPARSER (ПАРСЕР №1)")
-    print("=" * 60)
-
-    for query in test_queries:
-        print(f"\nЗапрос: '{query}'")
-        result = parser.parse_query(query)
-        print(f"Результат: {result}")
-        print("-" * 40)
-
-    print("\nПоддерживаемые intent'ы:")
-    for intent in parser.get_intent_list():
-        print(f"  - {intent}")
+# if __name__ == "__main__":
+#     # Настройка логирования для тестов
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+#     )
+#
+#     parser = QueryParser()
+#
+#     test_queries = [
+#         "Найди мне аналоги Азитромицина дозировкой до 100 мг",
+#         "Чем заменить Нурофен?",
+#         "Расскажи подробнее о Парацетамоле",
+#         "Какие есть синонимы у Ибупрофена?",
+#         "Найди препараты от гриппа",
+#         "Покажи лекарства производителя Байер",
+#         "Какие препараты производятся в Германии?",
+#         "Найди таблетки от головной боли",
+#         "Можно ли принимать Аспирин и Ибупрофен вместе?",
+#         "Сравни Анальгин и Парацетамол",
+#         "Найди препараты с дозировкой 500 мг",
+#         "",  # пустой запрос
+#         "???"  # некорректный запрос
+#     ]
+#
+#     print("=" * 60)
+#     print("ТЕСТИРОВАНИЕ QUERYPARSER (ПАРСЕР №1)")
+#     print("=" * 60)
+#
+#     for query in test_queries:
+#         print(f"\nЗапрос: '{query}'")
+#         result = parser.parse_query(query)
+#         print(f"Результат: {result}")
+#         print("-" * 40)
+#
+#     print("\nПоддерживаемые intent'ы:")
+#     for intent in parser.get_intent_list():
+#         print(f"  - {intent}")
