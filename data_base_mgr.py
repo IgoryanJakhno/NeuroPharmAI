@@ -176,6 +176,47 @@ class DataBaseManager:
             self.logger.error(f"Ошибка импорта {dbf_path}: {e}")
             raise
 
+    def _find_trade_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Поиск торгового наименования по неточному названию.
+        Возвращает запись из TRADE или None.
+        """
+        # 1. Точное совпадение (LIKE)
+        trade = self.cursor.execute(
+            "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
+            (f'%{name}%',)
+        ).fetchone()
+        if trade:
+            return trade
+
+        # 2. Поиск по отдельным словам (самое длинное слово)
+        words = name.split()
+        if len(words) > 1:
+            for word in sorted(words, key=len, reverse=True):
+                if len(word) >= 3:
+                    trade = self.cursor.execute(
+                        "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
+                        (f'%{word}%',)
+                    ).fetchone()
+                    if trade:
+                        self.logger.info(f"Найдено по слову '{word}': {trade['TRADE_RFN']}")
+                        return trade
+
+        # 3. Попытка отсечения возможного окончания
+        # Убираем последние 1-3 буквы и пробуем найти
+        for trim in range(1, 4):
+            if len(name) > trim + 3:
+                trimmed = name[:-trim]
+                trade = self.cursor.execute(
+                    "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
+                    (f'%{trimmed}%',)
+                ).fetchone()
+                if trade:
+                    self.logger.info(f"Найдено по усечённому названию '{trimmed}': {trade['TRADE_RFN']}")
+                    return trade
+
+        return None
+
     # --- Низкоуровневые методы поиска (то, что "дергает" Агент) ---
     def find_drugs_by_disease(self, disease_name: str) -> List[Dict[str, Any]]:
         """
@@ -198,12 +239,7 @@ class DataBaseManager:
     def get_drug_full_info(self, trade_name: str) -> Dict[str, Any]:
         self.logger.info(f"Запрос полной информации о препарате: '{trade_name}'")
 
-        # Находим TRADE_ID
-        trade = self.cursor.execute(
-            "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
-            (f'%{trade_name}%',)
-        ).fetchone()
-
+        trade = self._find_trade_by_name(trade_name)
         if not trade:
             return {"error": f"Препарат '{trade_name}' не найден"}
 
@@ -255,18 +291,13 @@ class DataBaseManager:
         return [dict(row) for row in results]
 
     def get_analogs_by_drug(self, trade_name: str) -> Dict[str, Any]:
-        """
-        Находит синонимы (тот же МНН) и аналоги (та же фармгруппа) препарата.
-        """
-        self.logger.info(f"Поиск синонимов и аналогов для: '{trade_name}'")        # Находим сам препарат
-        trade = self.cursor.execute(
-            "SELECT TRADE_ID, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
-            (f'%{trade_name}%',)
-        ).fetchone()
+        self.logger.info(f"Поиск синонимов и аналогов для: '{trade_name}'")
 
+        trade = self._find_trade_by_name(trade_name)
         if not trade:
             return {"error": f"Препарат '{trade_name}' не найден"}
 
+        trade_id = trade['TRADE_ID']
         inter_id = trade['INTER_ID']
 
         # Получаем фармгруппу через INTER
@@ -462,10 +493,7 @@ class DataBaseManager:
         self.logger.info(f"Сравнение препаратов: '{trade_name1}' и '{trade_name2}'")
 
         def get_drug_data(name):
-            trade = self.cursor.execute(
-                "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
-                (f'%{name}%',)
-            ).fetchone()
+            trade = self._find_trade_by_name(name)
             if not trade:
                 return None
 
@@ -539,10 +567,7 @@ class DataBaseManager:
         self.logger.info(f"Проверка взаимодействия: '{trade_name1}' и '{trade_name2}'")
 
         def get_drug_pharm_info(name):
-            trade = self.cursor.execute(
-                "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
-                (f'%{name}%',)
-            ).fetchone()
+            trade = self._find_trade_by_name(name)
             if not trade:
                 return None
 
@@ -595,11 +620,7 @@ class DataBaseManager:
         """
         self.logger.info(f"Запрос побочных эффектов для: '{trade_name}'")
 
-        trade = self.cursor.execute(
-            "SELECT TRADE_ID, TRADE_RFN, INTER_ID FROM TRADE WHERE TRADE_RFN LIKE ? AND INVALID = 0",
-            (f'%{trade_name}%',)
-        ).fetchone()
-
+        trade = self._find_trade_by_name(trade_name)
         if not trade:
             return {"error": f"Препарат '{trade_name}' не найден"}
 
@@ -706,8 +727,7 @@ class FindSynonymsHandler(BaseQueryHandler):
         }
 
 class FindAnalogsHandler(BaseQueryHandler):
-    """Обработчик: поиск аналогов препарата."""
-
+    """Обработчик: поиск аналогов препарата (с возможными фильтрами)."""
     def can_handle(self, intent: str) -> bool:
         return intent == "find_analog"
 
@@ -715,13 +735,63 @@ class FindAnalogsHandler(BaseQueryHandler):
         drug_name = entities.get("drug_name") or entities.get("drug")
         if not drug_name:
             return {"error": "Не указано название препарата"}
+
+        # 1. Получаем базовый список аналогов и синонимов
         result = db_manager.get_analogs_by_drug(drug_name)
-        return {
-            "intent": "find_analog",
-            "query": drug_name,
-            "synonyms": result.get("synonyms", []),
-            "analogs": result.get("analogs", [])
-        }
+        if "error" in result:
+            return result
+
+        # 2. Если есть фильтры, фильтруем
+        filters_applied = []
+        # Фильтр по дозировке
+        if "dosage_value" in entities:
+            dosage = entities.get("dosage_value")
+            unit = entities.get("unit")
+            operator = entities.get("dosage_operator")  # пока не используется
+            # Получаем список препаратов с подходящей дозировкой
+            dosage_result = db_manager.search_drugs_by_dosage(dosage, unit)
+            dosage_drugs = {d.get("TRADE_RFN") for d in dosage_result.get("drugs", []) if d.get("TRADE_RFN")}
+            # Пересекаем с нашим списком аналогов + синонимов
+            synonyms = set(result.get("synonyms", []))
+            analogs = {a["trade"] for a in result.get("analogs", [])}
+            # Оставляем только те, что есть в dosage_drugs
+            result["synonyms"] = [s for s in synonyms if s in dosage_drugs]
+            result["analogs"] = [a for a in result["analogs"] if a["trade"] in dosage_drugs]
+            filters_applied.append(f"дозировка {dosage} {unit or ''}")
+
+        # Фильтр по производителю
+        if "manufacturer" in entities:
+            man = entities["manufacturer"]
+            man_result = db_manager.search_drugs_by_manufacturer(man)
+            man_drugs = {d.get("TRADE_RFN") for d in man_result.get("drugs", []) if d.get("TRADE_RFN")}
+            result["synonyms"] = [s for s in result.get("synonyms", []) if s in man_drugs]
+            result["analogs"] = [a for a in result.get("analogs", []) if a["trade"] in man_drugs]
+            filters_applied.append(f"производитель {man}")
+
+        # Фильтр по стране
+        if "country" in entities:
+            cnt = entities["country"]
+            cnt_result = db_manager.search_drugs_by_country(cnt)
+            cnt_drugs = {d.get("TRADE_RFN") for d in cnt_result.get("drugs", []) if d.get("TRADE_RFN")}
+            result["synonyms"] = [s for s in result.get("synonyms", []) if s in cnt_drugs]
+            result["analogs"] = [a for a in result.get("analogs", []) if a["trade"] in cnt_drugs]
+            filters_applied.append(f"страна {cnt}")
+
+        # Фильтр по форме
+        if "form" in entities:
+            frm = entities["form"]
+            frm_result = db_manager.search_drugs_by_form(frm)
+            frm_drugs = {d.get("TRADE_RFN") for d in frm_result.get("drugs", []) if d.get("TRADE_RFN")}
+            result["synonyms"] = [s for s in result.get("synonyms", []) if s in frm_drugs]
+            result["analogs"] = [a for a in result.get("analogs", []) if a["trade"] in frm_drugs]
+            filters_applied.append(f"форма {frm}")
+
+        # Добавляем информацию о применённых фильтрах
+        if filters_applied:
+            result["filters_applied"] = filters_applied
+            result["intent"] = "find_analog"
+
+        return result
 
 class ManufacturerFilterHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
@@ -865,76 +935,85 @@ class AgentCore:
         return self.process_query(intent, entities)
 
 # ============= БЛОК ТЕСТИРОВАНИЯ =============
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__)
-
-    print("=" * 60)
-    print("ТЕСТИРОВАНИЕ ЯДРА АГЕНТА И МЕНЕДЖЕРА БД")
-    print("=" * 60)
-
-    DBF_FOLDER = "egk_extend306"
-    db_manager = DataBaseManager()
-
-    try:
-        logger.info("Инициализация БД (создание таблиц и импорт)...")
-        db_manager.initialize_database(DBF_FOLDER)
-        logger.info("База данных готова к работе.")
-
-        existing_tables = db_manager.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-        logger.info(f"Таблиц в БД: {len(existing_tables)}")
-        for t in existing_tables:
-            logger.info(f"  - {t['name']}")
-
-        agent = AgentCore(db_manager)
-
-        # Список тестов: описание, intent, entities
-        tests = [
-            ("Поиск лекарств по болезни", "find_drug_by_disease", {"disease": "Грипп"}),
-            ("Полная информация о препарате", "get_drug_info", {"drug_name": "Анальгин"}),
-            ("Синонимы по МНН", "find_synonyms", {"mnn": "Парацетамол"}),
-            ("Аналоги препарата", "find_analog", {"drug": "Нурофен"}),
-            ("Фильтр по производителю", "filter_by_manufacturer", {"manufacturer": "Байер"}),
-            ("Фильтр по стране", "filter_by_country", {"country": "Германия"}),
-            ("Фильтр по лекарственной форме", "filter_by_form", {"form": "таблетки"}),
-            ("Фильтр по дозировке (500 мг)", "filter_by_dosage", {"dosage_value": "500", "unit": "мг"}),
-            ("Фильтр по дозировке без единицы", "filter_by_dosage", {"dosage_value": "500"}),
-        ]
-
-        for desc, intent, entities in tests:
-            print(f"\n{'=' * 40}")
-            print(f"Тест: {desc}")
-            print(f"Intent: {intent}, Entities: {entities}")
-            print("-" * 30)
-            response = agent.process_query(intent, entities)
-            print("Результат:")
-            print(json.dumps(response, ensure_ascii=False, indent=2))
-
-        # ========== ТЕСТИРОВАНИЕ НОВЫХ МЕТОДОВ ==========
-        print("\n" + "=" * 60)
-        print("ТЕСТИРОВАНИЕ РАСШИРЕННОГО ФУНКЦИОНАЛА")
-        print("=" * 60)
-
-        # Тест сравнения препаратов
-        print("\n=== Тест: Сравнение препаратов ===")
-        resp = agent.process_query("compare_drugs", {"drug_name": "Анальгин", "drug_name2": "Парацетамол"})
-        print(json.dumps(resp, ensure_ascii=False, indent=2))
-
-        # Тест проверки взаимодействия
-        print("\n=== Тест: Проверка взаимодействия ===")
-        resp = agent.process_query("check_interaction", {"drug_name": "Аспирин", "drug_name2": "Ибупрофен"})
-        print(json.dumps(resp, ensure_ascii=False, indent=2))
-
-        # Тест побочных эффектов
-        print("\n=== Тест: Побочные эффекты ===")
-        resp = agent.process_query("get_side_effects", {"drug_name": "Анальгин"})
-        print(json.dumps(resp, ensure_ascii=False, indent=2))
-
-    except FileNotFoundError as e:
-        logger.error(f"Критическая ошибка: {e}")
-        print("Поместите DBF-файлы в папку egk_extend306.")
-    except Exception as e:
-        logger.exception("Непредвиденная ошибка")
-    finally:
-        if db_manager:
-            db_manager.close()
+# if __name__ == "__main__":
+#     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+#     logger = logging.getLogger(__name__)
+#
+#     print("=" * 60)
+#     print("ТЕСТИРОВАНИЕ ЯДРА АГЕНТА И МЕНЕДЖЕРА БД")
+#     print("=" * 60)
+#
+#     DBF_FOLDER = "egk_extend306"
+#     db_manager = DataBaseManager()
+#
+#     try:
+#         logger.info("Инициализация БД (создание таблиц и импорт)...")
+#         db_manager.initialize_database(DBF_FOLDER)
+#         logger.info("База данных готова к работе.")
+#
+#         existing_tables = db_manager.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+#         logger.info(f"Таблиц в БД: {len(existing_tables)}")
+#         for t in existing_tables:
+#             logger.info(f"  - {t['name']}")
+#
+#         agent = AgentCore(db_manager)
+#
+#         # Список тестов: описание, intent, entities
+#         tests = [
+#             ("Поиск лекарств по болезни", "find_drug_by_disease", {"disease": "Грипп"}),
+#             ("Полная информация о препарате", "get_drug_info", {"drug_name": "Анальгин"}),
+#             ("Синонимы по МНН", "find_synonyms", {"mnn": "Парацетамол"}),
+#             ("Аналоги препарата", "find_analog", {"drug": "Нурофен"}),
+#             ("Фильтр по производителю", "filter_by_manufacturer", {"manufacturer": "Байер"}),
+#             ("Фильтр по стране", "filter_by_country", {"country": "Германия"}),
+#             ("Фильтр по лекарственной форме", "filter_by_form", {"form": "таблетки"}),
+#             ("Фильтр по дозировке (500 мг)", "filter_by_dosage", {"dosage_value": "500", "unit": "мг"}),
+#             ("Фильтр по дозировке без единицы", "filter_by_dosage", {"dosage_value": "500"}),
+#         ]
+#
+#         for desc, intent, entities in tests:
+#             print(f"\n{'=' * 40}")
+#             print(f"Тест: {desc}")
+#             print(f"Intent: {intent}, Entities: {entities}")
+#             print("-" * 30)
+#             response = agent.process_query(intent, entities)
+#             print("Результат:")
+#             print(json.dumps(response, ensure_ascii=False, indent=2))
+#
+#         # ========== ТЕСТИРОВАНИЕ НОВЫХ МЕТОДОВ ==========
+#         print("\n" + "=" * 60)
+#         print("ТЕСТИРОВАНИЕ РАСШИРЕННОГО ФУНКЦИОНАЛА")
+#         print("=" * 60)
+#
+#         # Тест сравнения препаратов
+#         print("\n=== Тест: Сравнение препаратов ===")
+#         resp = agent.process_query("compare_drugs", {"drug_name": "Анальгин", "drug_name2": "Парацетамол"})
+#         print(json.dumps(resp, ensure_ascii=False, indent=2))
+#
+#         # Тест проверки взаимодействия
+#         print("\n=== Тест: Проверка взаимодействия ===")
+#         resp = agent.process_query("check_interaction", {"drug_name": "Аспирин", "drug_name2": "Ибупрофен"})
+#         print(json.dumps(resp, ensure_ascii=False, indent=2))
+#
+#         # Тест побочных эффектов
+#         print("\n=== Тест: Побочные эффекты ===")
+#         resp = agent.process_query("get_side_effects", {"drug_name": "Анальгин"})
+#         print(json.dumps(resp, ensure_ascii=False, indent=2))
+#
+#         test_text = "Найди мне аналоги Флебодии"
+#         parser = QueryParser()
+#         parsed = parser.parse_query(test_text)
+#         print("QueryParser:", parsed)
+#         if "error" not in parsed and "warning" not in parsed:
+#             response = agent.process_query(parsed["intent"], parsed["entities"])
+#             print("AgentCore response:")
+#             print(json.dumps(response, ensure_ascii=False, indent=2))
+#
+#     except FileNotFoundError as e:
+#         logger.error(f"Критическая ошибка: {e}")
+#         print("Поместите DBF-файлы в папку egk_extend306.")
+#     except Exception as e:
+#         logger.exception("Непредвиденная ошибка")
+#     finally:
+#         if db_manager:
+#             db_manager.close()
