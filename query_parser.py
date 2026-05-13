@@ -233,11 +233,8 @@ class QueryParser:
     def _detect_intent(self, clean_text: str, tokens: List[str]) -> Optional[str]:
         """
         Определение намерения пользователя по ключевым словам-триггерам.
-
-        Алгоритм:
-        1. Сначала ищем точные совпадения фраз в тексте
-        2. Затем ищем совпадения с отдельными токенами
-        3. При нескольких совпадениях выбираем наиболее специфичный intent
+        Все intent'ы равноправны, побеждает набравший наибольший вес.
+        Порог срабатывания – 3 балла.
         """
         text_lower = clean_text.lower()
         candidates = []
@@ -245,104 +242,196 @@ class QueryParser:
         for intent, triggers in INTENT_TRIGGERS.items():
             score = 0
             for trigger in triggers:
-                # Полное совпадение фразы
+                # Полное совпадение фразы (наибольший вес)
                 if trigger in text_lower:
-                    score += 3
-                # Совпадение отдельных слов из триггера с токенами
+                    score += 5
                 else:
-                    trigger_tokens = trigger.split()
-                    for tt in trigger_tokens:
-                        if tt in tokens or tt in text_lower:
-                            score += 1
-
-            if score > 0:
+                    # Совпадение всех слов триггера в тексте (средний вес)
+                    trigger_words = trigger.split()
+                    if all(word in tokens for word in trigger_words):
+                        score += 3
+                    else:
+                        # Совпадение отдельных слов (минимальный вес)
+                        for word in trigger_words:
+                            if word in tokens:
+                                score += 1
+            if score >= 3:  # Порог уверенности
                 candidates.append((intent, score))
 
         if not candidates:
+            # Если ничего не подошло, пробуем угадать по наличию сущностей
+            if self._extract_drug_name(clean_text, tokens):
+                return "get_drug_info"
             return None
 
-        # Сортируем по убыванию score и возвращаем лучший
+        # Сортируем по убыванию очков, выбираем лучший
         candidates.sort(key=lambda x: x[1], reverse=True)
         self.logger.info(f"QueryParser: Кандидаты intent: {candidates}")
         return candidates[0][0]
 
     def _extract_entities(self, clean_text: str, tokens: List[str], intent: str) -> Dict[str, Any]:
-        """
-        Извлечение сущностей из запроса в зависимости от intent.
-
-        Returns:
-            Словарь с извлечёнными сущностями (например, drug, disease, dosage_value, unit и т.д.)
-        """
         entities = {}
+        text_lower = clean_text.lower()
 
-        # Общее для многих intent: извлекаем название препарата
-        if intent in ["find_analog", "get_drug_info", "find_synonyms",
-                      "check_interaction", "compare_drugs"]:
-            drug = self._extract_drug_name(clean_text, tokens)
-            if drug:
-                entities["drug_name"] = drug
-
-        # Общее для поиска аналогов и синонимов: может быть указано МНН
-        if intent in ["find_synonyms", "find_analog"]:
-            mnn = self._extract_drug_name(clean_text, tokens)  # то же самое
-            if mnn and "drug_name" not in entities:
-                entities["drug_name"] = mnn
-
-        # Для поиска по болезни
-        if intent == "find_drug_by_disease":
-            disease = self._extract_disease_name(clean_text, tokens)
-            if disease:
-                entities["disease"] = disease
-
-        # Для сравнения препаратов
-        if intent == "compare_drugs":
-            drugs = self._extract_drug_name(clean_text, tokens)
-            if drugs:
-                # Попытка найти два препарата (разделённые "и", "или", "vs")
-                parts = re.split(r'\s+(?:и|или|vs|против)\s+', clean_text, maxsplit=1)
-                if len(parts) == 2:
-                    entities["drug_name"] = parts[0].strip().strip('?').strip('!').capitalize()
-                    entities["drug_name2"] = parts[1].strip().strip('?').strip('!').capitalize()
-
-        # Для проверки взаимодействия
-        if intent == "check_interaction":
-            drugs = self._extract_drug_name(clean_text, tokens)
-            if drugs:
-                parts = re.split(r'\s+(?:и|вместе|с|совместно)\s+', clean_text, maxsplit=1)
-                if len(parts) == 2:
-                    entities["drug_name"] = parts[0].strip().strip('?').strip('!').capitalize()
-                    entities["drug_name2"] = parts[1].strip().strip('?').strip('!').capitalize()
-
-        # Фильтр по производителю
-        if intent == "filter_by_manufacturer":
-            firm = self._extract_entity_by_pattern(clean_text, tokens,
-                                                   r'(?:производител[ья]|фирм[аеы]|компани[яи]|лаборатори[яи])\s+([А-ЯA-Z][\w\s]+)')
-            if firm:
-                entities["manufacturer"] = firm
-            else:
-                # Ищем слово с большой буквы после ключевых слов
-                entities["manufacturer"] = self._extract_capitalized_entity(tokens)
-
-        # Фильтр по стране
-        if intent == "filter_by_country":
-            country = self._extract_entity_by_pattern(clean_text, tokens,
-                                                      r'(?:стран[аеы]|производств[ао] в|сделано в)\s+([А-ЯA-Z][\w]+)')
-            if country:
-                entities["country"] = country
-
-        # Фильтр по форме
-        if intent == "filter_by_form":
-            form = self._extract_entity_by_pattern(clean_text, tokens,
-                                                   r'(?:форм[аеы]|в виде)\s+([\w\s]+)')
-            if form:
-                entities["form"] = form.strip()
-
-        # Фильтр по дозировке
-        if intent == "filter_by_dosage":
-            dosage_info = self._extract_dosage_info(clean_text, tokens)
+        # Универсальное извлечение параметров фильтрации (для всех intent)
+        dosage_info = self._extract_dosage_info(clean_text, tokens)
+        if dosage_info:
             entities.update(dosage_info)
 
+        manufacturer = self._extract_entity_by_pattern(clean_text, tokens,
+                                                       r'(?:производител[ья]|фирм[аы]|компани[ия]|лаборатори[ия])\s+([\w\s\-]+)')
+        if manufacturer:
+            entities["manufacturer"] = self._clean_entity(manufacturer).capitalize()
+
+        country = self._extract_entity_by_pattern(clean_text, tokens,
+                                                  r'(?:стран[аеы]|производств[ао] в|сделано в|производятся в)\s+([\w\s\-]+)')
+        if country:
+            entities["country"] = self._clean_entity(country).capitalize()
+
+        form = self._extract_entity_by_pattern(clean_text, tokens,
+                                               r'(?:форм[аы]|в виде)\s+([\w\s\-]+)')
+        if form:
+            entities["form"] = self._clean_entity(form).capitalize()
+
+        # --- Извлечение основных сущностей в зависимости от intent ---
+        if intent in ("find_analog", "find_synonyms", "get_drug_info"):
+            drug = self._extract_drug_name_clean(clean_text, tokens)
+            if drug and not drug.replace('.', '').isdigit():  # игнорируем чистые числа
+                entities["drug_name"] = drug.capitalize()
+            else:
+                # Fallback: попробуем найти любое длинное слово, не число и не стоп-слово
+                for word in reversed(tokens):
+                    if word.lower() not in STOP_WORDS and len(word) > 2 and not word.isdigit():
+                        entities["drug_name"] = word.capitalize()
+                        break
+
+        elif intent == "find_drug_by_disease":
+            disease = self._extract_disease_name_clean(clean_text, tokens)
+            if disease:
+                entities["disease"] = disease.capitalize()
+
+        elif intent == "compare_drugs":
+            # Разделяем по "и", "или", "vs", "против"
+            parts = re.split(r'\s+(?:и|или|vs|против)\s+', clean_text)
+            # Очищаем первый элемент от командных слов
+            first_part = re.sub(r'^(сравни|сравнение|сопоставь|что лучше|что эффективнее|сравниваем)\s+', '',
+                                parts[0].strip(), flags=re.I)
+            first_part = self._clean_entity(first_part)
+            if len(parts) >= 2:
+                second_part = self._clean_entity(parts[1])
+                if first_part and second_part:
+                    entities["drug_name"] = first_part.capitalize()
+                    entities["drug_name2"] = second_part.capitalize()
+            else:
+                drug = self._extract_drug_name_clean(clean_text, tokens)
+                if drug:
+                    entities["drug_name"] = drug.capitalize()
+
+
+        elif intent == "check_interaction":
+
+            # Разделяем по "и", "вместе с", "совместно с", "одновременно с"
+
+            parts = re.split(r'\s+(?:и|вместе с|совместно с|одновременно с)\s+', clean_text)
+
+            if len(parts) >= 2:
+
+                # Очищаем первую часть от возможных вводных фраз
+
+                drug1 = re.sub(r'^(можно ли принимать|можно ли совмещать|можно ли пить|можно ли)\s+', '',
+                               parts[0].strip(), flags=re.I)
+
+                drug1 = self._clean_entity(drug1)
+
+                drug2 = self._clean_entity(parts[1])
+
+                # Убираем конечные слова-связки: "вместе", "совместно", "одновременно"
+
+                drug2 = re.sub(r'\s+(вместе|совместно|одновременно)\s*$', '', drug2, flags=re.I).strip()
+
+                drug2 = drug2.rstrip('?')
+
+                entities["drug_name"] = drug1.capitalize() if drug1 else ""
+
+                entities["drug_name2"] = drug2.capitalize() if drug2 else ""
+
+            else:
+
+                drug = self._extract_drug_name_clean(clean_text, tokens)
+
+                if drug:
+                    entities["drug_name"] = drug.capitalize()
+
+        # Пост-очистка всех строковых значений (убираем возможные стоп-слова)
+        for key in list(entities.keys()):
+            val = entities[key]
+            if isinstance(val, str):
+                val = self._clean_entity(val)
+                if val and val.lower() not in STOP_WORDS:
+                    if key in ("drug_name", "drug_name2", "disease", "manufacturer", "country"):
+                        val = val.capitalize()
+                    entities[key] = val
+                else:
+                    del entities[key]
+
         return entities
+
+    # ---------- Вспомогательные улучшенные экстракторы ----------
+    def _extract_drug_name_clean(self, text: str, tokens: List[str]) -> Optional[str]:
+        """
+        Улучшенное извлечение названия препарата.
+        Ищет слова с заглавной буквы в исходном тексте, игнорирует цифры и вопросы.
+        """
+        # Ищем все слова, которые начинались с заглавной буквы в исходном тексте
+        # (это хорошие кандидаты на названия препаратов/болезней)
+        words = text.split()
+        capital_words = []
+        for i, w in enumerate(words):
+            # Убираем знаки препинания вокруг
+            clean_w = w.strip('.,!?()[]{}":;')
+            # Пропускаем короткие, числа и слова, не начинающиеся с заглавной буквы
+            if len(clean_w) <= 2:
+                continue
+            if clean_w.isdigit():
+                continue
+            # Первое слово в запросе может быть с заглавной буквы, но это не препарат
+            if i == 0:
+                continue
+            # Если слово начинается с заглавной буквы, и это не конец предложения
+            if clean_w[0].isupper() and clean_w.lower() not in STOP_WORDS:
+                capital_words.append(clean_w)
+
+        # Если нашли такие слова, берём первое (обычно одно) и возвращаем очищенным
+        if capital_words:
+            return self._clean_entity(capital_words[0])
+
+        # Fallback: ищем любое длинное слово, не являющееся стоп-словом или числом
+        for w in reversed(words):
+            clean_w = w.strip('.,!?()[]{}":;').lower()
+            if clean_w in STOP_WORDS or clean_w.isdigit() or len(clean_w) <= 2:
+                continue
+            return clean_w.capitalize()
+        return None
+
+    def _extract_disease_name_clean(self, text: str, tokens: List[str]) -> Optional[str]:
+        """Улучшенное извлечение названия болезни."""
+        patterns = [
+            r'(?:от|при|против|лечени[ея])\s+([\w\s\-]+?)(?:\s*(?:препарат|таблетк|лекарств|средств|$))',
+            r'препарат[ыа]?\s+от\s+([\w\s\-]+)',
+            r'таблетк[иа]?\s+от\s+([\w\s\-]+)',
+        ]
+        for pat in patterns:
+            match = re.search(pat, text, re.IGNORECASE)
+            if match:
+                disease = match.group(1).strip()
+                disease = self._clean_entity(disease)
+                if disease:
+                    return disease
+        # Fallback: последнее существительное после "от"
+        parts = text.split(' от ')
+        if len(parts) > 1:
+            return self._clean_entity(parts[-1])
+        return None
 
     def _extract_drug_name(self, text: str, tokens: List[str]) -> Optional[str]:
         """
@@ -477,6 +566,18 @@ class QueryParser:
     def get_intent_list(self) -> List[str]:
         """Возвращает список всех поддерживаемых intent'ов."""
         return list(INTENT_TRIGGERS.keys())
+
+    def _clean_entity(self, text: str) -> str:
+        """Удаляет стоп-слова и лишние символы из извлечённой сущности."""
+        if not text:
+            return text
+        # Удаляем знаки препинания, оставляем буквы, цифры, пробелы, дефисы
+        text = re.sub(r'[^\w\s\-]', ' ', text)
+        # Разбиваем на слова
+        words = text.split()
+        # Отфильтровываем стоп-слова и слишком короткие токены
+        filtered = [w for w in words if w.lower() not in STOP_WORDS and len(w) > 1]
+        return ' '.join(filtered).strip()
 
 
 # ============= ТЕСТОВЫЙ БЛОК =============
