@@ -906,20 +906,22 @@ class AgentCore:
     def process_query(self, intent: str, entities: Dict[str, Any]) -> Dict[str, Any]:
         """
         Основной метод для обработки запроса.
-        Args:
-            intent (str): Намерение, определенное NLU (напр., "find_drug_by_disease").
-            entities (Dict): Сущности, извлеченные NLU (напр., {"disease": "грипп"}).
-        Returns:
-            Dict: Структурированный JSON-ответ для последующей передачи в LLM.
         """
         self.logger.info(f"AgentCore: Получен запрос intent='{intent}', entities={entities}")
+
         for handler in self.handlers:
             if handler.can_handle(intent):
                 self.logger.info(f"AgentCore: Запрос обрабатывается {handler.__class__.__name__}")
-                return handler.handle(entities, self.db)
+                result = handler.handle(entities, self.db)
+                # Добавляем intent в ответ, если его там нет
+                if "intent" not in result:
+                    result["intent"] = intent
+                # Применяем фильтры
+                result = self._apply_filters(result, entities, self.db)
+                return result
 
         self.logger.warning(f"AgentCore: Не найден обработчик для intent='{intent}'")
-        return {"error": f"Не могу обработать запрос типа '{intent}'"}
+        return {"error": f"Не могу обработать запрос типа '{intent}'", "intent": intent}
 
     def process_raw_query(self, user_text: str) -> Dict[str, Any]:
         """
@@ -939,6 +941,71 @@ class AgentCore:
 
         self.logger.info(f"Разобран запрос: intent='{intent}', entities={entities}")
         return self.process_query(intent, entities)
+
+    def _apply_filters(self, result: Dict, entities: Dict, db_manager) -> Dict:
+        """
+        Применяет фильтры из entities к результату.
+        Фильтрует списки препаратов по производителю, стране, форме, дозировке.
+        """
+        if "error" in result:
+            return result
+
+        # Получаем все торговые названия из результата
+        all_drugs = set()
+        for key in ("result", "synonyms", "analogs", "drugs", "packages"):
+            if key in result:
+                items = result[key]
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, str):
+                            all_drugs.add(item)
+                        elif isinstance(item, dict):
+                            name = item.get("trade") or item.get("TRADE_RFN") or item.get("trade_name") or item.get(
+                                "DRUG_NAME")
+                            if name:
+                                all_drugs.add(name)
+
+        if not all_drugs:
+            return result
+
+        filtered = set(all_drugs)
+
+        # Фильтр по производителю
+        if "manufacturer" in entities:
+            man_result = db_manager.search_drugs_by_manufacturer(entities["manufacturer"])
+            man_drugs = {d.get("TRADE_RFN") or d.get("DRUG_NAME") for d in man_result.get("drugs", [])}
+            filtered &= man_drugs
+
+        # Фильтр по стране
+        if "country" in entities:
+            cnt_result = db_manager.search_drugs_by_country(entities["country"])
+            cnt_drugs = {d.get("TRADE_RFN") or d.get("DRUG_NAME") for d in cnt_result.get("drugs", [])}
+            filtered &= cnt_drugs
+
+        # Фильтр по форме
+        if "form" in entities:
+            frm_result = db_manager.search_drugs_by_form(entities["form"])
+            frm_drugs = {d.get("TRADE_RFN") or d.get("DRUG_NAME") for d in frm_result.get("drugs", [])}
+            filtered &= frm_drugs
+
+        # Применяем фильтрацию к результату
+        for key in ("result", "synonyms", "drugs"):
+            if key in result and isinstance(result[key], list):
+                if result[key] and isinstance(result[key][0], str):
+                    result[key] = [d for d in result[key] if d in filtered]
+                elif result[key] and isinstance(result[key][0], dict):
+                    result[key] = [d for d in result[key]
+                                   if (d.get("trade") or d.get("TRADE_RFN") or d.get("DRUG_NAME")) in filtered]
+
+        if "analogs" in result and isinstance(result["analogs"], list):
+            result["analogs"] = [a for a in result["analogs"]
+                                 if a.get("trade", "") in filtered]
+
+        if "packages" in result and isinstance(result["packages"], list):
+            result["packages"] = [p for p in result["packages"]
+                                  if p.get("DRUG_NAME", "") in filtered]
+
+        return result
 
 # ============= БЛОК ТЕСТИРОВАНИЯ =============
 # if __name__ == "__main__":

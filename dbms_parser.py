@@ -56,8 +56,13 @@ class DBMSParser:
             result = formatter(response)
             return result + self.disclaimer
         else:
-            # Если intent не распознан, возвращаем JSON как есть, но красиво
-            return json.dumps(response, ensure_ascii=False, indent=2) + self.disclaimer
+            # Если intent не распознан, пытаемся вывести данные как есть
+            if "drug_name" in response:
+                return f"Препарат: {response.get('drug_name', '—')}" + self.disclaimer
+            elif "disease" in response:
+                return f"Заболевание: {response.get('disease', '—')}" + self.disclaimer
+            else:
+                return f"Результат: {str(response)}" + self.disclaimer
 
     def _format_error(self, error_msg: str) -> str:
         """Форматирование сообщения об ошибке."""

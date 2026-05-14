@@ -203,7 +203,7 @@ class SearchPanel(ttk.Frame):
                        command=self._export_results).pack(pady=5)
 
     def _do_search(self):
-        """Выполнение поиска."""
+        """Выполнение поиска с учётом фильтров."""
         query = self.query_entry.get().strip()
         if not query:
             messagebox.showwarning("Внимание", "Введите поисковый запрос")
@@ -213,14 +213,43 @@ class SearchPanel(ttk.Frame):
         parser = QueryParser()
         parsed = parser.parse_query(query)
 
-        if "error" in parsed:
+        print(f"[DEBUG] Parsed: {parsed}")
+
+        # Добавляем фильтры из полей ввода, если они не были извлечены из запроса
+        manufacturer = self.manufacturer_filter.get().strip()
+        country = self.country_filter.get().strip()
+        form = self.form_filter.get().strip()
+
+        if "error" in parsed and not any([manufacturer, country, form]):
             self.result_text.delete(1.0, tk.END)
             self.result_text.insert(tk.END, f"❌ {parsed['error']}")
             return
 
+        # Если парсер не смог определить intent, но есть фильтры — угадываем intent
+        if "error" in parsed:
+            if manufacturer:
+                parsed = {"intent": "filter_by_manufacturer", "entities": {"manufacturer": manufacturer}}
+            elif country:
+                parsed = {"intent": "filter_by_country", "entities": {"country": country}}
+            elif form:
+                parsed = {"intent": "filter_by_form", "entities": {"form": form}}
+            else:
+                self.result_text.delete(1.0, tk.END)
+                self.result_text.insert(tk.END, f"❌ Не удалось распознать запрос")
+                return
+
+        # Объединяем сущности из парсера и из фильтров
+        entities = parsed.get("entities", {})
+        if manufacturer and "manufacturer" not in entities:
+            entities["manufacturer"] = manufacturer
+        if country and "country" not in entities:
+            entities["country"] = country
+        if form and "form" not in entities:
+            entities["form"] = form
+
         # Обработка через AgentCore
         try:
-            result = self.agent.process_query(parsed["intent"], parsed["entities"])
+            result = self.agent.process_query(parsed["intent"], entities)
         except Exception as e:
             self.result_text.delete(1.0, tk.END)
             self.result_text.insert(tk.END, f"❌ Ошибка обработки запроса: {e}")
@@ -232,6 +261,9 @@ class SearchPanel(ttk.Frame):
         # Вывод
         self.result_text.delete(1.0, tk.END)
         self.result_text.insert(tk.END, response_text)
+
+        print(f"[DEBUG] Final intent: {parsed['intent']}")
+        print(f"[DEBUG] Final entities: {entities}")
 
     def _export_results(self):
         """Экспорт результатов в файл."""
