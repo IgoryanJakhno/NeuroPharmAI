@@ -665,6 +665,17 @@ class DataBaseManager:
             "warning": "Список побочных эффектов является ознакомительным. Полный перечень смотрите в официальной инструкции."
         }
 
+    def get_mnn_by_trade_name(self, trade_name: str) -> Optional[str]:
+        """По торговому названию возвращает МНН."""
+        trade = self._find_trade_by_name(trade_name)
+        if not trade:
+            return None
+        inter_id = trade['INTER_ID']
+        inter = self.cursor.execute(
+            "SELECT INTER_RFN FROM INTER WHERE INTER_ID = ?", (inter_id,)
+        ).fetchone()
+        return inter['INTER_RFN'] if inter else None
+
 # --- 2. Абстрактный обработчик запросов ---
 class BaseQueryHandler(ABC):
     """Базовый класс для всех обработчиков сценариев."""
@@ -682,28 +693,65 @@ class BaseQueryHandler(ABC):
 
 # --- 3. Конкретный обработчик: Болезнь -> Лекарство ---
 class DiseaseToDrugHandler(BaseQueryHandler):
-    """Реализует сценарий: поиск лекарств по названию болезни."""
-
     def can_handle(self, intent: str) -> bool:
         return intent == "find_drug_by_disease"
 
     def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
         disease = entities.get("disease")
         if not disease:
-            return {"error": "Не указано название болезни (entity: disease)"}
+            return {"error": "Не указано название болезни"}
 
+        # Базовый поиск
         drugs = db_manager.find_drugs_by_disease(disease)
+        drug_names = [d['TRADE_RFN'] for d in drugs]
 
-        return {
+        # Применяем фильтры
+        filters_applied = []
+
+        # Производитель
+        if "manufacturer" in entities:
+            man = entities["manufacturer"]
+            man_res = db_manager.search_drugs_by_manufacturer(man)
+            man_set = {d.get("TRADE_RFN", "") for d in man_res.get("drugs", [])}
+            drug_names = [n for n in drug_names if n in man_set]
+            filters_applied.append(f"производитель {man}")
+
+        # Страна
+        if "country" in entities:
+            cnt = entities["country"]
+            cnt_res = db_manager.search_drugs_by_country(cnt)
+            cnt_set = {d.get("TRADE_RFN", "") for d in cnt_res.get("drugs", [])}
+            drug_names = [n for n in drug_names if n in cnt_set]
+            filters_applied.append(f"страна {cnt}")
+
+        # Форма
+        if "form" in entities:
+            frm = entities["form"]
+            frm_res = db_manager.search_drugs_by_form(frm)
+            frm_set = {d.get("TRADE_RFN", "") for d in frm_res.get("drugs", [])}
+            drug_names = [n for n in drug_names if n in frm_set]
+            filters_applied.append(f"форма {frm}")
+
+        # Дозировка
+        if "dosage_value" in entities:
+            val = entities["dosage_value"]
+            unit = entities.get("unit")
+            dos_res = db_manager.search_drugs_by_dosage(val, unit)
+            dos_set = {d.get("TRADE_RFN", "") for d in dos_res.get("drugs", [])}
+            drug_names = [n for n in drug_names if n in dos_set]
+            filters_applied.append(f"дозировка {val} {unit or ''}")
+
+        result = {
             "intent": "find_drug_by_disease",
             "query": disease,
-            "count": len(drugs),
-            "result": [d['TRADE_RFN'] for d in drugs]  # Извлекаем только названия
+            "count": len(drug_names),
+            "result": drug_names
         }
+        if filters_applied:
+            result["filters_applied"] = filters_applied
+        return result
 
 class DrugFullInfoHandler(BaseQueryHandler):
-    """Обработчик: полная информация о препарате."""
-
     def can_handle(self, intent: str) -> bool:
         return intent == "get_drug_info"
 
@@ -711,26 +759,101 @@ class DrugFullInfoHandler(BaseQueryHandler):
         drug_name = entities.get("drug_name") or entities.get("drug")
         if not drug_name:
             return {"error": "Не указано название препарата"}
-        return db_manager.get_drug_full_info(drug_name)
 
+        full_info = db_manager.get_drug_full_info(drug_name)
+        if "error" in full_info:
+            return full_info
+
+        # Фильтруем упаковки
+        packages = full_info.get("packages", [])
+        if packages and any(k in entities for k in ("manufacturer", "country", "form", "dosage_value")):
+            filtered_packages = []
+            for pkg in packages:
+                keep = True
+                if "manufacturer" in entities:
+                    if entities["manufacturer"].lower() not in pkg.get("FIRM_RFN", "").lower():
+                        keep = False
+                if keep and "country" in entities:
+                    if entities["country"].lower() not in pkg.get("CNTRY_RFN", "").lower():
+                        keep = False
+                if keep and "form" in entities:
+                    form_in = (entities["form"].lower() in pkg.get("FORM_RFN", "").lower() or
+                               entities["form"].lower() in pkg.get("DRUGF_RFN", "").lower())
+                    if not form_in:
+                        keep = False
+                if keep and "dosage_value" in entities:
+                    dose_str = pkg.get("MED_DOSE", "")
+                    val = str(entities["dosage_value"])
+                    if val not in dose_str:
+                        keep = False
+                if keep:
+                    filtered_packages.append(pkg)
+            full_info["packages"] = filtered_packages
+            full_info["total_packages"] = len(filtered_packages)
+            full_info["filters_applied"] = [k for k in entities if k in ("manufacturer","country","form","dosage_value")]
+        return full_info
 
 class FindSynonymsHandler(BaseQueryHandler):
-    """Обработчик: поиск синонимов по МНН."""
-
     def can_handle(self, intent: str) -> bool:
         return intent == "find_synonyms"
 
     def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
-        mnn = entities.get("mnn") or entities.get("drug_name") or entities.get("substance")
-        if not mnn:
-            return {"error": "Не указано МНН (действующее вещество)"}
+        raw_input = entities.get("mnn") or entities.get("drug_name") or entities.get("substance")
+        if not raw_input:
+            return {"error": "Не указано действующее вещество или торговое название"}
+
+        # 1. Пробуем найти МНН напрямую (если введено уже МНН)
+        mnn = raw_input
         synonyms = db_manager.get_synonyms_by_mnn(mnn)
-        return {
+        if synonyms:
+            drug_names = [s['TRADE_RFN'] for s in synonyms]
+        else:
+            # 2. Если не найдено, пробуем интерпретировать как торговое название
+            real_mnn = db_manager.get_mnn_by_trade_name(raw_input)
+            if real_mnn:
+                synonyms = db_manager.get_synonyms_by_mnn(real_mnn)
+                drug_names = [s['TRADE_RFN'] for s in synonyms]
+                mnn = real_mnn  # для отображения в ответе
+            else:
+                return {"error": f"Не найдено действующее вещество для '{raw_input}'"}
+
+        # Применяем фильтры (аналогично)
+        filters_applied = []
+        if "manufacturer" in entities:
+            man = entities["manufacturer"]
+            man_res = db_manager.search_drugs_by_manufacturer(man)
+            man_set = {d.get("TRADE_RFN", "") for d in man_res.get("drugs", [])}
+            drug_names = [n for n in drug_names if n in man_set]
+            filters_applied.append(f"производитель {man}")
+        if "country" in entities:
+            cnt = entities["country"]
+            cnt_res = db_manager.search_drugs_by_country(cnt)
+            cnt_set = {d.get("TRADE_RFN", "") for d in cnt_res.get("drugs", [])}
+            drug_names = [n for n in drug_names if n in cnt_set]
+            filters_applied.append(f"страна {cnt}")
+        if "form" in entities:
+            frm = entities["form"]
+            frm_res = db_manager.search_drugs_by_form(frm)
+            frm_set = {d.get("TRADE_RFN", "") for d in frm_res.get("drugs", [])}
+            drug_names = [n for n in drug_names if n in frm_set]
+            filters_applied.append(f"форма {frm}")
+        if "dosage_value" in entities:
+            val = entities["dosage_value"]
+            unit = entities.get("unit")
+            dos_res = db_manager.search_drugs_by_dosage(val, unit)
+            dos_set = {d.get("TRADE_RFN", "") for d in dos_res.get("drugs", [])}
+            drug_names = [n for n in drug_names if n in dos_set]
+            filters_applied.append(f"дозировка {val} {unit or ''}")
+
+        result = {
             "intent": "find_synonyms",
-            "query": mnn,
-            "count": len(synonyms),
-            "result": [s['TRADE_RFN'] for s in synonyms]
+            "query": mnn,  # показываем реальное МНН
+            "count": len(drug_names),
+            "result": drug_names
         }
+        if filters_applied:
+            result["filters_applied"] = filters_applied
+        return result
 
 class FindAnalogsHandler(BaseQueryHandler):
     """Обработчик: поиск аналогов препарата (с возможными фильтрами)."""
@@ -807,7 +930,27 @@ class ManufacturerFilterHandler(BaseQueryHandler):
         firm = entities.get("manufacturer") or entities.get("firm")
         if not firm:
             return {"error": "Не указан производитель"}
-        return db_manager.search_drugs_by_manufacturer(firm)
+        # Базовый результат
+        result = db_manager.search_drugs_by_manufacturer(firm)
+        drugs = result.get("drugs", [])
+        # Дополнительные фильтры
+        if "country" in entities:
+            cnt_res = db_manager.search_drugs_by_country(entities["country"])
+            cnt_set = {d.get("TRADE_RFN", "") for d in cnt_res.get("drugs", [])}
+            drugs = [d for d in drugs if d.get("TRADE_RFN", "") in cnt_set]
+        if "form" in entities:
+            frm_res = db_manager.search_drugs_by_form(entities["form"])
+            frm_set = {d.get("TRADE_RFN", "") for d in frm_res.get("drugs", [])}
+            drugs = [d for d in drugs if d.get("TRADE_RFN", "") in frm_set]
+        if "dosage_value" in entities:
+            val = entities["dosage_value"]
+            unit = entities.get("unit")
+            dos_res = db_manager.search_drugs_by_dosage(val, unit)
+            dos_set = {d.get("TRADE_RFN", "") for d in dos_res.get("drugs", [])}
+            drugs = [d for d in drugs if d.get("TRADE_RFN", "") in dos_set]
+        result["drugs"] = drugs
+        result["count"] = len(drugs)
+        return result
 
 class CountryFilterHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
@@ -916,8 +1059,6 @@ class AgentCore:
                 # Добавляем intent в ответ, если его там нет
                 if "intent" not in result:
                     result["intent"] = intent
-                # Применяем фильтры
-                result = self._apply_filters(result, entities, self.db)
                 return result
 
         self.logger.warning(f"AgentCore: Не найден обработчик для intent='{intent}'")
@@ -941,71 +1082,6 @@ class AgentCore:
 
         self.logger.info(f"Разобран запрос: intent='{intent}', entities={entities}")
         return self.process_query(intent, entities)
-
-    def _apply_filters(self, result: Dict, entities: Dict, db_manager) -> Dict:
-        """
-        Применяет фильтры из entities к результату.
-        Фильтрует списки препаратов по производителю, стране, форме, дозировке.
-        """
-        if "error" in result:
-            return result
-
-        # Получаем все торговые названия из результата
-        all_drugs = set()
-        for key in ("result", "synonyms", "analogs", "drugs", "packages"):
-            if key in result:
-                items = result[key]
-                if isinstance(items, list):
-                    for item in items:
-                        if isinstance(item, str):
-                            all_drugs.add(item)
-                        elif isinstance(item, dict):
-                            name = item.get("trade") or item.get("TRADE_RFN") or item.get("trade_name") or item.get(
-                                "DRUG_NAME")
-                            if name:
-                                all_drugs.add(name)
-
-        if not all_drugs:
-            return result
-
-        filtered = set(all_drugs)
-
-        # Фильтр по производителю
-        if "manufacturer" in entities:
-            man_result = db_manager.search_drugs_by_manufacturer(entities["manufacturer"])
-            man_drugs = {d.get("TRADE_RFN") or d.get("DRUG_NAME") for d in man_result.get("drugs", [])}
-            filtered &= man_drugs
-
-        # Фильтр по стране
-        if "country" in entities:
-            cnt_result = db_manager.search_drugs_by_country(entities["country"])
-            cnt_drugs = {d.get("TRADE_RFN") or d.get("DRUG_NAME") for d in cnt_result.get("drugs", [])}
-            filtered &= cnt_drugs
-
-        # Фильтр по форме
-        if "form" in entities:
-            frm_result = db_manager.search_drugs_by_form(entities["form"])
-            frm_drugs = {d.get("TRADE_RFN") or d.get("DRUG_NAME") for d in frm_result.get("drugs", [])}
-            filtered &= frm_drugs
-
-        # Применяем фильтрацию к результату
-        for key in ("result", "synonyms", "drugs"):
-            if key in result and isinstance(result[key], list):
-                if result[key] and isinstance(result[key][0], str):
-                    result[key] = [d for d in result[key] if d in filtered]
-                elif result[key] and isinstance(result[key][0], dict):
-                    result[key] = [d for d in result[key]
-                                   if (d.get("trade") or d.get("TRADE_RFN") or d.get("DRUG_NAME")) in filtered]
-
-        if "analogs" in result and isinstance(result["analogs"], list):
-            result["analogs"] = [a for a in result["analogs"]
-                                 if a.get("trade", "") in filtered]
-
-        if "packages" in result and isinstance(result["packages"], list):
-            result["packages"] = [p for p in result["packages"]
-                                  if p.get("DRUG_NAME", "") in filtered]
-
-        return result
 
 # ============= БЛОК ТЕСТИРОВАНИЯ =============
 # if __name__ == "__main__":
