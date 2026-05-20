@@ -264,7 +264,7 @@ class DataBaseManager:
                 COALESCE(d.FORM_RFN, df.DRUGF_RFN, gf.GENF_RFN) AS FORM_RFN,
                 d.NOM_QTTY,
                 f.FIRM_RFN,
-                c.CNTRY_RFN,
+                COALESCE(c.CNTRY_RFN, c.CNTRY_RSN) AS CNTRY_RFN,
                 d.CHECK_DATE
             FROM DRUGS d
             LEFT JOIN MEDICINE m ON d.MED_ID = m.MED_ID
@@ -375,7 +375,7 @@ class DataBaseManager:
         FROM DRUGS d
         JOIN COUNTRY c ON d.CNTRY_ID = c.CNTRY_ID
         JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
-        WHERE c.CNTRY_RFN LIKE ? AND d.INVALID = 0 AND t.INVALID = 0
+        WHERE COALESCE(c.CNTRY_RFN, c.CNTRY_RSN) LIKE ? AND d.INVALID = 0 AND t.INVALID = 0
         LIMIT 100
         """
         rows = self.cursor.execute(query, (f'%{country_name}%',)).fetchall()
@@ -697,6 +697,21 @@ class BaseQueryHandler(ABC):
         """Выполняет обработку запроса и возвращает структурированный JSON."""
         pass
 
+    @staticmethod
+    def country_matches(query: str, text: str) -> bool:
+        """Проверяет, соответствует ли запрос страны тексту (с учётом сокращений)."""
+        if not text:
+            return False
+        q = query.strip().lower()
+        t = text.strip().lower()
+        # Прямое вхождение
+        if q in t:
+            return True
+        # Если запрос длиннее 3 символов, пробуем первые 3
+        if len(q) >= 3:
+            if q[:3] in t:
+                return True
+        return False
 
 # --- 3. Конкретный обработчик: Болезнь -> Лекарство ---
 class DiseaseToDrugHandler(BaseQueryHandler):
@@ -771,33 +786,65 @@ class DrugFullInfoHandler(BaseQueryHandler):
         if "error" in full_info:
             return full_info
 
-        # Фильтруем упаковки
+        # Фильтрация упаковок
         packages = full_info.get("packages", [])
+        print(f"[DEBUG]: manufacturer from entities = '{entities.get('manufacturer')}'")
+        print(f"[DEBUG]: first pkg FIRM_RFN = '{packages[0].get('FIRM_RFN')}'")
+        print(f"[DEBUG]: country from entities = '{entities.get('country')}'")
+        print(f"[DEBUG]: first pkg CNTRY_RFN = '{packages[0].get('CNTRY_RFN')}'")
+        print(f"[DEBUG]: first pkg DRUG_NAME = '{packages[0].get('DRUG_NAME')}'")
         if packages and any(k in entities for k in ("manufacturer", "country", "form", "dosage_value")):
-            filtered_packages = []
+            filtered = []
             for pkg in packages:
                 keep = True
-                if "manufacturer" in entities:
-                    if entities["manufacturer"].lower() not in pkg.get("FIRM_RFN", "").lower():
+
+                # Производитель (частичное совпадение, нормализация)
+                if keep and "manufacturer" in entities:
+                    man_query = entities["manufacturer"].strip().lower()
+                    firm = pkg.get("FIRM_RFN", "").strip().lower()
+                    drug_name = pkg.get("DRUG_NAME", "").strip().lower()
+                    # Ищем в FIRM_RFN или в DRUG_NAME
+                    if not (man_query in firm or man_query in drug_name):
                         keep = False
+
+                #Страна
                 if keep and "country" in entities:
-                    if entities["country"].lower() not in pkg.get("CNTRY_RFN", "").lower():
+                    cnt_query = entities["country"]
+                    country_field = pkg.get("CNTRY_RFN", "")
+                    drug_name = pkg.get("DRUG_NAME", "")
+                    if not (self.country_matches(cnt_query, country_field) or
+                            self.country_matches(cnt_query, drug_name)):
                         keep = False
+
+                # Форма выпуска
                 if keep and "form" in entities:
-                    form_in = (entities["form"].lower() in pkg.get("FORM_RFN", "").lower() or
-                               entities["form"].lower() in pkg.get("DRUGF_RFN", "").lower())
-                    if not form_in:
+                    form_query = entities["form"].strip().lower()
+                    form_field = pkg.get("FORM_RFN", "").strip().lower()
+                    drug_name = pkg.get("DRUG_NAME", "").strip().lower()
+                    if not (form_query in form_field or form_query in drug_name):
                         keep = False
+
+                # Дозировка (ищем числовое значение в MED_DOSE)
                 if keep and "dosage_value" in entities:
-                    dose_str = pkg.get("MED_DOSE", "")
-                    val = str(entities["dosage_value"])
-                    if val not in dose_str:
+                    dosage_val = str(entities["dosage_value"]).strip()
+                    dose = pkg.get("MED_DOSE", "").strip().lower()
+                    if not dose or dosage_val not in dose:
                         keep = False
+
                 if keep:
-                    filtered_packages.append(pkg)
-            full_info["packages"] = filtered_packages
-            full_info["total_packages"] = len(filtered_packages)
-            full_info["filters_applied"] = [k for k in entities if k in ("manufacturer","country","form","dosage_value")]
+                    filtered.append(pkg)
+
+            full_info["packages"] = filtered
+            full_info["total_packages"] = len(filtered)
+            full_info["filters_applied"] = [k for k in entities if
+                                            k in ("manufacturer", "country", "form", "dosage_value")]
+
+            # Логирование (для отладки)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(
+                f"DrugFullInfoHandler: применены фильтры {full_info['filters_applied']}, осталось упаковок: {len(filtered)}")
+
         return full_info
 
 class FindSynonymsHandler(BaseQueryHandler):
