@@ -84,7 +84,6 @@ class DBMSParser:
         return "\n".join(lines)
 
     def _format_drug_full_info(self, data: Dict[str, Any]) -> str:
-        """Форматирование полной информации о препарате."""
         trade_name = data.get("trade_name", "Неизвестный препарат")
         mnn = data.get("mnn", "Нет данных")
         packages = data.get("packages", [])
@@ -93,33 +92,43 @@ class DBMSParser:
         lines = [
             f"📋 Информация о препарате «{trade_name}»",
             f"• Действующее вещество (МНН): {mnn}",
-            f"• Количество упаковок в БД: {total}\n",
+            f"• Количество упаковок в БД: {total}\n"
         ]
 
         if packages:
             lines.append("Доступные формы выпуска:")
-            for i, pkg in enumerate(packages[:10], 1):
-                name = pkg.get("DRUG_NAME", "—")
-                dose = pkg.get("MED_DOSE", "")
-                form = pkg.get("FORM_RFN", "")
-                firm = pkg.get("FIRM_RFN", "")
-                country = pkg.get("CNTRY_RFN", "")
+            for i, pkg in enumerate(packages, 1):
+                # Формируем название упаковки
+                name = pkg.get("DRUG_NAME", "").strip()
+                if not name:
+                    name = f"Упаковка №{i}"
 
+                # Собираем детали
                 details = []
+                dose = pkg.get("MED_DOSE", "").strip()
                 if dose:
                     details.append(f"дозировка: {dose}")
+                form = pkg.get("FORM_RFN", "").strip()
                 if form:
                     details.append(f"форма: {form}")
+                firm = pkg.get("FIRM_RFN", "").strip()
                 if firm:
                     details.append(f"производитель: {firm}")
+                country = pkg.get("CNTRY_RFN", "").strip()
                 if country:
                     details.append(f"страна: {country}")
+                qty = pkg.get("NOM_QTTY")
+                if qty and str(qty).strip():
+                    details.append(f"кол-во: {qty}")
+                date = pkg.get("CHECK_DATE", "").strip()
+                if date:
+                    details.append(f"дата рег.: {date}")
 
                 detail_str = ", ".join(details) if details else "нет дополнительных данных"
                 lines.append(f"  {i}. {name} ({detail_str})")
 
-            if total > 10:
-                lines.append(f"  ... и ещё {total - 10} упаковок")
+            if total > 20:
+                lines.append(f"  ... и ещё {total - 20} упаковок")
         else:
             lines.append("Нет данных об упаковках.")
 

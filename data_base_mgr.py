@@ -243,8 +243,6 @@ class DataBaseManager:
         return [dict(row) for row in results]
 
     def get_drug_full_info(self, trade_name: str) -> Dict[str, Any]:
-        self.logger.info(f"Запрос полной информации о препарате: '{trade_name}'")
-
         trade = self._find_trade_by_name(trade_name)
         if not trade:
             return {"error": f"Препарат '{trade_name}' не найден"}
@@ -258,14 +256,23 @@ class DataBaseManager:
             (inter_id,)
         ).fetchone()
 
-        # Упаковки через DRUGS + MEDICINE + FIRM + COUNTRY
+        # Упаковки с улучшенным fallback
         drugs = self.cursor.execute("""
-            SELECT d.DRUG_NAME, m.MED_DOSE, d.FORM_RFN, d.NOM_QTTY,
-                   f.FIRM_RFN, c.CNTRY_RFN, d.CHECK_DATE
+            SELECT 
+                COALESCE(d.DRUG_NAME, t.TRADE_RFN) AS DRUG_NAME,
+                m.MED_DOSE,
+                COALESCE(d.FORM_RFN, df.DRUGF_RFN, gf.GENF_RFN) AS FORM_RFN,
+                d.NOM_QTTY,
+                f.FIRM_RFN,
+                c.CNTRY_RFN,
+                d.CHECK_DATE
             FROM DRUGS d
             LEFT JOIN MEDICINE m ON d.MED_ID = m.MED_ID
             LEFT JOIN FIRM f ON d.FIRM_ID = f.FIRM_ID
             LEFT JOIN COUNTRY c ON d.CNTRY_ID = c.CNTRY_ID
+            LEFT JOIN DRUGFORM df ON d.DRUGF_ID = df.DRUGF_ID
+            LEFT JOIN GENFORM gf ON d.GENF_ID = gf.GENF_ID
+            LEFT JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
             WHERE d.TRADE_ID = ? AND d.INVALID = 0
             ORDER BY d.CHECK_DATE DESC
             LIMIT 20
