@@ -213,7 +213,7 @@ class SearchPanel(ttk.Frame):
         parser = QueryParser()
         parsed = parser.parse_query(query)
 
-        print(f"[DEBUG] Parsed: {parsed}")
+        logging.debug(f"SearchPanel: Parsed: {parsed}")
 
         # Добавляем фильтры из полей ввода, если они не были извлечены из запроса
         manufacturer = self.manufacturer_filter.get().strip()
@@ -262,8 +262,8 @@ class SearchPanel(ttk.Frame):
         self.result_text.delete(1.0, tk.END)
         self.result_text.insert(tk.END, response_text)
 
-        print(f"[DEBUG] Final intent: {parsed['intent']}")
-        print(f"[DEBUG] Final entities: {entities}")
+        logging.debug(f"SearchPanel: Final intent: {parsed['intent']}")
+        logging.debug(f"SearchPanel: Final entities: {entities}")
 
     def _export_results(self):
         """Экспорт результатов в файл."""
@@ -327,38 +327,84 @@ class LogConsole(tk.Toplevel):
         self.title("Консоль логов")
         self.geometry("700x400")
 
+        # Флаг, что окно открыто
+        self.is_open = True
+
         self.log_text = scrolledtext.ScrolledText(self, wrap=tk.WORD,
                                                   font=("Consolas", 9), bg="#1e1e1e", fg="#d4d4d4")
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Кнопка очистки
-        ttk.Button(self, text="Очистить логи", command=self._clear_logs).pack(pady=5)
+        # Кнопки управления
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Очистить логи", command=self._clear_logs).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Сохранить логи", command=self._save_logs).pack(side=tk.LEFT, padx=5)
 
-        # Перенаправление логов в консоль
+        # Добавляем обработчик логов при открытии окна
         self._setup_log_handler()
 
+        # При закрытии окна удаляем обработчик
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
     def _setup_log_handler(self):
-        """Настройка перехвата логов."""
+        """Добавление обработчика логов в корневой логгер."""
 
         class TextHandler(logging.Handler):
             def __init__(self, text_widget):
                 super().__init__()
                 self.text_widget = text_widget
+                self.setLevel(logging.DEBUG)  # Ловить все уровни
 
             def emit(self, record):
                 msg = self.format(record) + "\n"
+                # Добавляем цветовое выделение для разных уровней
+                tag = None
+                if record.levelno == logging.ERROR:
+                    tag = "error"
+                elif record.levelno == logging.WARNING:
+                    tag = "warning"
+                elif record.levelno == logging.INFO:
+                    tag = "info"
+                elif record.levelno == logging.DEBUG:
+                    tag = "debug"
+
                 self.text_widget.insert(tk.END, msg)
+                if tag:
+                    # Добавляем теги для цвета (можно настроить)
+                    line_start = self.text_widget.index("end-2l")
+                    line_end = self.text_widget.index("end-1c")
+                    self.text_widget.tag_add(tag, line_start, line_end)
+
                 self.text_widget.see(tk.END)
 
-        handler = TextHandler(self.log_text)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        handler.setLevel(logging.INFO)
-        logging.getLogger().addHandler(handler)
+        # Настройка цветов
+        self.log_text.tag_config("error", foreground="#ff6b6b")
+        self.log_text.tag_config("warning", foreground="#ffd93d")
+        self.log_text.tag_config("info", foreground="#6bcb77")
+        self.log_text.tag_config("debug", foreground="#4d96ff")
+
+        self.log_handler = TextHandler(self.log_text)
+        self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s'))
+        logging.getLogger().addHandler(self.log_handler)
 
     def _clear_logs(self):
         """Очистка логов."""
         self.log_text.delete(1.0, tk.END)
 
+    def _save_logs(self):
+        """Сохранение логов в файл."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"logs_{timestamp}.txt"
+        content = self.log_text.get(1.0, tk.END)
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(content)
+        messagebox.showinfo("Сохранение", f"Логи сохранены в {filename}")
+
+    def _on_close(self):
+        """Закрытие окна и удаление обработчика."""
+        logging.getLogger().removeHandler(self.log_handler)
+        self.is_open = False
+        self.destroy()
 
 class UserManagementWindow(tk.Toplevel):
     """
@@ -531,6 +577,11 @@ class MainApplication:
         from auth import DatabaseManager as AuthDB, Authenticator
         from usr_mgr import UserManager
 
+        # Настройка логирования для всего приложения
+        logging.basicConfig(level=logging.DEBUG)
+        # Убираем вывод в консоль (чтобы не дублировать)
+        logging.getLogger().handlers.clear()
+
         # База данных аутентификации
         self.auth_db = AuthDB("neuro_pharm.db")
         self.auth_db.connect()
@@ -549,6 +600,21 @@ class MainApplication:
 
         # Парсеры
         self.dbms_parser = DBMSParser()
+
+        def setup_logging():
+            """Настройка единого логирования для всего приложения."""
+            logger = logging.getLogger()
+            logger.setLevel(logging.DEBUG)
+
+            # Очищаем старые обработчики, чтобы не было дублирования
+            for handler in logger.handlers[:]:
+                logger.removeHandler(handler)
+
+            # Формат для консоли GUI
+            gui_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+
+            # Обработчик для консоли GUI будет добавлен позже, когда создастся LogConsole
+            return logger
 
     def _init_med_database(self):
         """Инициализация базы лекарств (если ещё не)."""
