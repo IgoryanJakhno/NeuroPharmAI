@@ -725,9 +725,11 @@ class DiseaseToDrugHandler(BaseQueryHandler):
 
         # Базовый поиск
         drugs = db_manager.find_drugs_by_disease(disease)
-        drug_names = [d['TRADE_RFN'] for d in drugs]
+        drug_names = sorted([d['TRADE_RFN'] for d in drugs])  # сортировка для предсказуемости
 
-        # Применяем фильтры
+        logging.info(f"[DEBUG] DiseaseToDrugHandler: найдено препаратов по болезни: {len(drug_names)}")
+        logging.info(f"[DEBUG] Первые 5: {drug_names[:5]}")
+
         filters_applied = []
 
         # Производитель
@@ -735,7 +737,9 @@ class DiseaseToDrugHandler(BaseQueryHandler):
             man = entities["manufacturer"]
             man_res = db_manager.search_drugs_by_manufacturer(man)
             man_set = {d.get("TRADE_RFN", "") for d in man_res.get("drugs", [])}
+            before = len(drug_names)
             drug_names = [n for n in drug_names if n in man_set]
+            logging.info(f"[DEBUG] Фильтр по производителю '{man}': {before} -> {len(drug_names)}")
             filters_applied.append(f"производитель {man}")
 
         # Страна
@@ -743,25 +747,50 @@ class DiseaseToDrugHandler(BaseQueryHandler):
             cnt = entities["country"]
             cnt_res = db_manager.search_drugs_by_country(cnt)
             cnt_set = {d.get("TRADE_RFN", "") for d in cnt_res.get("drugs", [])}
+            before = len(drug_names)
             drug_names = [n for n in drug_names if n in cnt_set]
+            logging.info(f"[DEBUG] Фильтр по стране '{cnt}': {before} -> {len(drug_names)}")
             filters_applied.append(f"страна {cnt}")
 
-        # Форма
+        # Форма выпуска (улучшенный вариант – проверка через DRUGS)
         if "form" in entities:
-            frm = entities["form"]
-            frm_res = db_manager.search_drugs_by_form(frm)
-            frm_set = {d.get("TRADE_RFN", "") for d in frm_res.get("drugs", [])}
-            drug_names = [n for n in drug_names if n in frm_set]
-            filters_applied.append(f"форма {frm}")
+            form_query = entities["form"].strip().lower()
+            # Получаем все торговые названия, у которых есть упаковка с нужной формой
+            # (используем прямой запрос к DRUGS, DRUGFORM, GENFORM)
+            query = """
+                SELECT DISTINCT t.TRADE_RFN
+                FROM DRUGS d
+                JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
+                LEFT JOIN DRUGFORM df ON d.DRUGF_ID = df.DRUGF_ID
+                LEFT JOIN GENFORM gf ON d.GENF_ID = gf.GENF_ID
+                WHERE (df.DRUGF_RFN LIKE ? OR gf.GENF_RFN LIKE ?)
+                  AND d.INVALID = 0 AND t.INVALID = 0
+            """
+            rows = db_manager.cursor.execute(query, (f'%{form_query}%', f'%{form_query}%')).fetchall()
+            form_set = {row['TRADE_RFN'] for row in rows}
+            before = len(drug_names)
+            drug_names = [n for n in drug_names if n in form_set]
+            logging.info(f"[DEBUG] Фильтр по форме '{form_query}': {before} -> {len(drug_names)}")
+            filters_applied.append(f"форма {form_query}")
 
-        # Дозировка
+        # Дозировка (аналогично – проверка через MED_DOSE в DRUGS)
         if "dosage_value" in entities:
-            val = entities["dosage_value"]
-            unit = entities.get("unit")
-            dos_res = db_manager.search_drugs_by_dosage(val, unit)
-            dos_set = {d.get("TRADE_RFN", "") for d in dos_res.get("drugs", [])}
-            drug_names = [n for n in drug_names if n in dos_set]
-            filters_applied.append(f"дозировка {val} {unit or ''}")
+            dosage_val = str(entities["dosage_value"]).strip()
+            unit = entities.get("unit", "")
+            pattern = f"%{dosage_val}%{unit}%" if unit else f"%{dosage_val}%"
+            query = """
+                SELECT DISTINCT t.TRADE_RFN
+                FROM DRUGS d
+                JOIN TRADE t ON d.TRADE_ID = t.TRADE_ID
+                JOIN MEDICINE m ON d.MED_ID = m.MED_ID
+                WHERE m.MED_DOSE LIKE ? AND d.INVALID = 0 AND t.INVALID = 0
+            """
+            rows = db_manager.cursor.execute(query, (pattern,)).fetchall()
+            dosage_set = {row['TRADE_RFN'] for row in rows}
+            before = len(drug_names)
+            drug_names = [n for n in drug_names if n in dosage_set]
+            logging.info(f"[DEBUG] Фильтр по дозировке '{dosage_val} {unit}': {before} -> {len(drug_names)}")
+            filters_applied.append(f"дозировка {dosage_val} {unit}")
 
         result = {
             "intent": "find_drug_by_disease",
@@ -787,12 +816,13 @@ class DrugFullInfoHandler(BaseQueryHandler):
             return full_info
 
         # Фильтрация упаковок
+        import logging
         packages = full_info.get("packages", [])
-        print(f"[DEBUG]: manufacturer from entities = '{entities.get('manufacturer')}'")
-        print(f"[DEBUG]: first pkg FIRM_RFN = '{packages[0].get('FIRM_RFN')}'")
-        print(f"[DEBUG]: country from entities = '{entities.get('country')}'")
-        print(f"[DEBUG]: first pkg CNTRY_RFN = '{packages[0].get('CNTRY_RFN')}'")
-        print(f"[DEBUG]: first pkg DRUG_NAME = '{packages[0].get('DRUG_NAME')}'")
+        logging.info(f"[DEBUG]: manufacturer from entities = '{entities.get('manufacturer')}'")
+        logging.info(f"[DEBUG]: first pkg FIRM_RFN = '{packages[0].get('FIRM_RFN')}'")
+        logging.info(f"[DEBUG]: country from entities = '{entities.get('country')}'")
+        logging.info(f"[DEBUG]: first pkg CNTRY_RFN = '{packages[0].get('CNTRY_RFN')}'")
+        logging.info(f"[DEBUG]: first pkg DRUG_NAME = '{packages[0].get('DRUG_NAME')}'")
         if packages and any(k in entities for k in ("manufacturer", "country", "form", "dosage_value")):
             filtered = []
             for pkg in packages:
@@ -840,7 +870,6 @@ class DrugFullInfoHandler(BaseQueryHandler):
                                             k in ("manufacturer", "country", "form", "dosage_value")]
 
             # Логирование (для отладки)
-            import logging
             logger = logging.getLogger(__name__)
             logger.info(
                 f"DrugFullInfoHandler: применены фильтры {full_info['filters_applied']}, осталось упаковок: {len(filtered)}")
