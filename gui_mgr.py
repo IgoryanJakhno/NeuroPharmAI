@@ -285,9 +285,12 @@ class AnalysisPanel(ttk.Frame):
     """
     Панель LLM-анализа (п. 4.2.6).
     """
-    def __init__(self, parent, llm_manager=None):
+
+    def __init__(self, parent, llm_manager=None, dbms_parser=None, current_user=None):
         super().__init__(parent)
         self.llm_manager = llm_manager
+        self.dbms_parser = dbms_parser
+        self.current_user = current_user  # Для проверки роли (senior/dev)
 
         # Поле ввода
         input_frame = ttk.Frame(self)
@@ -308,6 +311,11 @@ class AnalysisPanel(ttk.Frame):
                                                        font=("Arial", 10), height=20)
         self.analysis_text.pack(fill=tk.BOTH, expand=True)
 
+        # Кнопка экспорта (для senior и dev)
+        if self.current_user and self.current_user.get("Role") in ("senior", "dev"):
+            ttk.Button(self, text="📄 Экспортировать ответ",
+                       command=self._export_response).pack(pady=5)
+
         if self.llm_manager:
             status = "✅" if self.llm_manager.check_availability() else "❌"
             self.analysis_text.insert(tk.END, f"LLM подключена: {status}\nГотова к анализу запросов.")
@@ -315,7 +323,7 @@ class AnalysisPanel(ttk.Frame):
             self.analysis_text.insert(tk.END, "LLM-модуль не подключён.")
 
     def _do_analysis(self):
-        """Выполнение LLM-анализа."""
+        """Выполнение LLM-анализа с подробным логированием."""
         if not self.llm_manager:
             messagebox.showinfo("Информация", "LLM-модуль не подключён.")
             return
@@ -325,17 +333,67 @@ class AnalysisPanel(ttk.Frame):
             messagebox.showwarning("Внимание", "Введите запрос для анализа")
             return
 
-        self.analysis_text.delete(1.0, tk.END)
-        self.analysis_text.insert(tk.END, "⏳ Идёт анализ...\n")
+        # --- Логирование: Шаг 1 — Парсинг запроса ---
+        from query_parser import QueryParser
+        parser = QueryParser()
+        parsed = parser.parse_query(query)
 
-        response = self.llm_manager.generate_response(query)
+        logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Исходный запрос: '{query}'")
+        logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Intent: {parsed.get('intent', 'не определён')}")
+        logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Сущности: {parsed.get('entities', {})}")
 
+        # --- Если есть DBMSParser и AgentCore, делаем полный цикл ---
+        if self.dbms_parser and hasattr(self, 'agent'):
+            try:
+                # Получаем результат от AgentCore
+                result = self.agent.process_query(parsed.get("intent", ""), parsed.get("entities", {}))
+
+                # Формируем промпт для LLM через DBMSParser
+                llm_prompt = self.dbms_parser.format_for_llm(result)
+
+                # Логирование: Шаг 2 — Сформированный ввод нейросети
+                logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Сформированный промпт:\n{llm_prompt}")
+
+                # Отправляем в LLM
+                response = self.llm_manager.generate_response(llm_prompt)
+            except Exception as e:
+                logging.getLogger("NeuroPharm.LLM").error(f"[LLM-анализ] Ошибка полного цикла: {e}")
+                response = self.llm_manager.generate_response(query)
+        else:
+            # Простой режим: отправляем запрос напрямую
+            logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Прямой запрос к LLM (без AgentCore)")
+            response = self.llm_manager.generate_response(query)
+
+        # --- Логирование: Шаг 3 — Ответ модели ---
+        if response:
+            logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Ответ получен ({len(response)} символов)")
+            logging.getLogger("NeuroPharm.LLM").debug(f"[LLM-анализ] Текст ответа:\n{response}")
+        else:
+            logging.getLogger("NeuroPharm.LLM").error("[LLM-анализ] Ответ не получен")
+
+        # Вывод в интерфейс
         self.analysis_text.delete(1.0, tk.END)
         if response:
             self.analysis_text.insert(tk.END, response)
         else:
             self.analysis_text.insert(tk.END, "❌ Не удалось получить ответ от LLM.\n"
                                               "Проверьте, что Ollama запущена (ollama serve).")
+
+    def _export_response(self):
+        """Экспорт ответа модели в файл."""
+        content = self.analysis_text.get(1.0, tk.END).strip()
+        if not content or "LLM подключена" in content:
+            messagebox.showwarning("Внимание", "Нет результата анализа для экспорта")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"llm_export_{timestamp}.txt"
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        messagebox.showinfo("Экспорт", f"Результат анализа сохранён в файл: {filename}")
+        logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Ответ экспортирован в {filename}")
 
 class LogConsole(tk.Toplevel):
     """
@@ -695,7 +753,8 @@ class MainApplication:
         notebook.add(search_panel, text="🔍 Поиск")
 
         # Вкладка анализа
-        analysis_panel = AnalysisPanel(notebook, self.llm_manager)
+        analysis_panel = AnalysisPanel(notebook, self.llm_manager, self.dbms_parser, self.current_user)
+        analysis_panel.agent = self.agent
         notebook.add(analysis_panel, text="🤖 Анализ (LLM)")
 
         # Строка состояния
