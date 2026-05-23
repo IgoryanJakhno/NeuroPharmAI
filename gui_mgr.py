@@ -202,6 +202,43 @@ class SearchPanel(ttk.Frame):
             ttk.Button(self, text="📄 Экспортировать результаты",
                        command=self._export_results).pack(pady=5)
 
+    def _show_formatted_text(self, text: str, tag: str = None):
+        """Отображает текст с форматированием (жирный, заголовки, списки)."""
+        self.result_text.delete(1.0, tk.END)
+
+        if tag:
+            self.result_text.insert(tk.END, text, tag)
+            return
+
+        # Настройка тегов
+        self.result_text.tag_configure("bold", font=("Arial", 10, "bold"))
+        self.result_text.tag_configure("header", font=("Arial", 11, "bold"), foreground="#2c3e50")
+        self.result_text.tag_configure("subheader", font=("Arial", 10, "bold"), foreground="#34495e")
+        self.result_text.tag_configure("list_item", font=("Arial", 10), lmargin1=20, lmargin2=30)
+        self.result_text.tag_configure("error", font=("Arial", 10), foreground="red")
+        self.result_text.tag_configure("warning", font=("Arial", 10), foreground="#e67e22")
+        self.result_text.tag_configure("disclaimer", font=("Arial", 9, "italic"), foreground="#7f8c8d")
+
+        for line in text.split('\n'):
+            stripped = line.strip()
+
+            if stripped.startswith('⚠️ Информация носит справочный'):
+                self.result_text.insert(tk.END, line + '\n', "disclaimer")
+            elif stripped.startswith('📋') or stripped.startswith('💊') or stripped.startswith(
+                    '🔍') or stripped.startswith('📊') or stripped.startswith('⚠️ Побочные'):
+                self.result_text.insert(tk.END, line + '\n', "header")
+            elif stripped.startswith('🔹') or stripped.startswith('🔸'):
+                self.result_text.insert(tk.END, line + '\n', "subheader")
+            elif stripped and (stripped[0].isdigit() or stripped.startswith('•') or stripped.startswith('  ')):
+                self.result_text.insert(tk.END, line + '\n', "list_item")
+            elif stripped.startswith('⚠️'):
+                self.result_text.insert(tk.END, line + '\n', "warning")
+            elif '**' in stripped:
+                clean = stripped.replace('**', '')
+                self.result_text.insert(tk.END, clean + '\n', "bold")
+            else:
+                self.result_text.insert(tk.END, line + '\n')
+
     def _do_search(self):
         """Выполнение поиска с учётом фильтров."""
         query = self.query_entry.get().strip()
@@ -221,8 +258,7 @@ class SearchPanel(ttk.Frame):
         form = self.form_filter.get().strip()
 
         if "error" in parsed and not any([manufacturer, country, form]):
-            self.result_text.delete(1.0, tk.END)
-            self.result_text.insert(tk.END, f"❌ {parsed['error']}")
+            self._show_formatted_text(f"❌ {parsed['error']}", "error")
             return
 
         # Если парсер не смог определить intent, но есть фильтры — угадываем intent
@@ -234,8 +270,7 @@ class SearchPanel(ttk.Frame):
             elif form:
                 parsed = {"intent": "filter_by_form", "entities": {"form": form}}
             else:
-                self.result_text.delete(1.0, tk.END)
-                self.result_text.insert(tk.END, f"❌ Не удалось распознать запрос")
+                self._show_formatted_text("❌ Не удалось распознать запрос", "error")
                 return
 
         # Объединяем сущности из парсера и из фильтров
@@ -251,16 +286,14 @@ class SearchPanel(ttk.Frame):
         try:
             result = self.agent.process_query(parsed["intent"], entities)
         except Exception as e:
-            self.result_text.delete(1.0, tk.END)
-            self.result_text.insert(tk.END, f"❌ Ошибка обработки запроса: {e}")
+            self._show_formatted_text(f"❌ Ошибка обработки запроса: {e}", "error")
             return
 
         # Форматирование через DBMSParser
         response_text = self.dbms_parser.format_response(result)
 
         # Вывод
-        self.result_text.delete(1.0, tk.END)
-        self.result_text.insert(tk.END, response_text)
+        self._show_formatted_text(response_text)
 
         logging.debug(f"SearchPanel: Final intent: {parsed['intent']}")
         logging.debug(f"SearchPanel: Final entities: {entities}")
@@ -322,6 +355,36 @@ class AnalysisPanel(ttk.Frame):
         else:
             self.analysis_text.insert(tk.END, "LLM-модуль не подключён.")
 
+    def _show_formatted_text(self, text: str, tag: str = None):
+        """Отображает текст с форматированием."""
+        self.analysis_text.delete(1.0, tk.END)
+
+        if tag:
+            self.analysis_text.insert(tk.END, text, tag)
+            return
+
+        self.analysis_text.tag_configure("bold", font=("Arial", 10, "bold"))
+        self.analysis_text.tag_configure("header", font=("Arial", 11, "bold"), foreground="#2c3e50")
+        self.analysis_text.tag_configure("list_item", font=("Arial", 10), lmargin1=20, lmargin2=30)
+        self.analysis_text.tag_configure("error", font=("Arial", 10), foreground="red")
+        self.analysis_text.tag_configure("disclaimer", font=("Arial", 9, "italic"), foreground="#7f8c8d")
+
+        for line in text.split('\n'):
+            stripped = line.strip()
+
+            if stripped.startswith('⚠️ Информация носит справочный'):
+                self.analysis_text.insert(tk.END, line + '\n', "disclaimer")
+            elif '**' in stripped and stripped.startswith('**'):
+                clean = stripped.replace('**', '')
+                self.analysis_text.insert(tk.END, clean + '\n', "header")
+            elif stripped.startswith('* ') or stripped.startswith('  '):
+                self.analysis_text.insert(tk.END, line + '\n', "list_item")
+            elif '**' in stripped:
+                clean = stripped.replace('**', '')
+                self.analysis_text.insert(tk.END, clean + '\n', "bold")
+            else:
+                self.analysis_text.insert(tk.END, line + '\n')
+
     def _do_analysis(self):
         """Выполнение LLM-анализа с подробным логированием."""
         if not self.llm_manager:
@@ -372,12 +435,11 @@ class AnalysisPanel(ttk.Frame):
             logging.getLogger("NeuroPharm.LLM").error("[LLM-анализ] Ответ не получен")
 
         # Вывод в интерфейс
-        self.analysis_text.delete(1.0, tk.END)
         if response:
-            self.analysis_text.insert(tk.END, response)
+            self._show_formatted_text(response)
         else:
-            self.analysis_text.insert(tk.END, "❌ Не удалось получить ответ от LLM.\n"
-                                              "Проверьте, что Ollama запущена (ollama serve).")
+            self._show_formatted_text("❌ Не удалось получить ответ от LLM.\n"
+                                      "Проверьте, что Ollama запущена (ollama serve).", "error")
 
     def _export_response(self):
         """Экспорт ответа модели в файл."""
