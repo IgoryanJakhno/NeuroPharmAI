@@ -25,7 +25,7 @@ from typing import Optional, Dict, Any
 from data_base_mgr import DataBaseManager, AgentCore
 from query_parser import QueryParser
 from dbms_parser import DBMSParser
-
+from llm_mgr import LLMManager
 
 class LoginDialog(tk.Toplevel):
     """
@@ -202,6 +202,43 @@ class SearchPanel(ttk.Frame):
             ttk.Button(self, text="📄 Экспортировать результаты",
                        command=self._export_results).pack(pady=5)
 
+    def _show_formatted_text(self, text: str, tag: str = None):
+        """Отображает текст с форматированием (жирный, заголовки, списки)."""
+        self.result_text.delete(1.0, tk.END)
+
+        if tag:
+            self.result_text.insert(tk.END, text, tag)
+            return
+
+        # Настройка тегов
+        self.result_text.tag_configure("bold", font=("Arial", 10, "bold"))
+        self.result_text.tag_configure("header", font=("Arial", 11, "bold"), foreground="#2c3e50")
+        self.result_text.tag_configure("subheader", font=("Arial", 10, "bold"), foreground="#34495e")
+        self.result_text.tag_configure("list_item", font=("Arial", 10), lmargin1=20, lmargin2=30)
+        self.result_text.tag_configure("error", font=("Arial", 10), foreground="red")
+        self.result_text.tag_configure("warning", font=("Arial", 10), foreground="#e67e22")
+        self.result_text.tag_configure("disclaimer", font=("Arial", 9, "italic"), foreground="#7f8c8d")
+
+        for line in text.split('\n'):
+            stripped = line.strip()
+
+            if stripped.startswith('⚠️ Информация носит справочный'):
+                self.result_text.insert(tk.END, line + '\n', "disclaimer")
+            elif stripped.startswith('📋') or stripped.startswith('💊') or stripped.startswith(
+                    '🔍') or stripped.startswith('📊') or stripped.startswith('⚠️ Побочные'):
+                self.result_text.insert(tk.END, line + '\n', "header")
+            elif stripped.startswith('🔹') or stripped.startswith('🔸'):
+                self.result_text.insert(tk.END, line + '\n', "subheader")
+            elif stripped and (stripped[0].isdigit() or stripped.startswith('•') or stripped.startswith('  ')):
+                self.result_text.insert(tk.END, line + '\n', "list_item")
+            elif stripped.startswith('⚠️'):
+                self.result_text.insert(tk.END, line + '\n', "warning")
+            elif '**' in stripped:
+                clean = stripped.replace('**', '')
+                self.result_text.insert(tk.END, clean + '\n', "bold")
+            else:
+                self.result_text.insert(tk.END, line + '\n')
+
     def _do_search(self):
         """Выполнение поиска с учётом фильтров."""
         query = self.query_entry.get().strip()
@@ -221,8 +258,7 @@ class SearchPanel(ttk.Frame):
         form = self.form_filter.get().strip()
 
         if "error" in parsed and not any([manufacturer, country, form]):
-            self.result_text.delete(1.0, tk.END)
-            self.result_text.insert(tk.END, f"❌ {parsed['error']}")
+            self._show_formatted_text(f"❌ {parsed['error']}", "error")
             return
 
         # Если парсер не смог определить intent, но есть фильтры — угадываем intent
@@ -234,8 +270,7 @@ class SearchPanel(ttk.Frame):
             elif form:
                 parsed = {"intent": "filter_by_form", "entities": {"form": form}}
             else:
-                self.result_text.delete(1.0, tk.END)
-                self.result_text.insert(tk.END, f"❌ Не удалось распознать запрос")
+                self._show_formatted_text("❌ Не удалось распознать запрос", "error")
                 return
 
         # Объединяем сущности из парсера и из фильтров
@@ -251,16 +286,14 @@ class SearchPanel(ttk.Frame):
         try:
             result = self.agent.process_query(parsed["intent"], entities)
         except Exception as e:
-            self.result_text.delete(1.0, tk.END)
-            self.result_text.insert(tk.END, f"❌ Ошибка обработки запроса: {e}")
+            self._show_formatted_text(f"❌ Ошибка обработки запроса: {e}", "error")
             return
 
         # Форматирование через DBMSParser
         response_text = self.dbms_parser.format_response(result)
 
         # Вывод
-        self.result_text.delete(1.0, tk.END)
-        self.result_text.insert(tk.END, response_text)
+        self._show_formatted_text(response_text)
 
         logging.debug(f"SearchPanel: Final intent: {parsed['intent']}")
         logging.debug(f"SearchPanel: Final entities: {entities}")
@@ -286,9 +319,11 @@ class AnalysisPanel(ttk.Frame):
     Панель LLM-анализа (п. 4.2.6).
     """
 
-    def __init__(self, parent, llm_manager=None):
+    def __init__(self, parent, llm_manager=None, dbms_parser=None, current_user=None):
         super().__init__(parent)
-        self.llm_manager = llm_manager  # Будет подключён позже на Этапе 6
+        self.llm_manager = llm_manager
+        self.dbms_parser = dbms_parser
+        self.current_user = current_user  # Для проверки роли (senior/dev)
 
         # Поле ввода
         input_frame = ttk.Frame(self)
@@ -297,6 +332,7 @@ class AnalysisPanel(ttk.Frame):
         ttk.Label(input_frame, text="🤖 Запрос к LLM:", font=("Arial", 11)).pack(side=tk.LEFT)
         self.llm_query = ttk.Entry(input_frame, width=50, font=("Arial", 11))
         self.llm_query.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+        self.llm_query.bind("<Return>", lambda e: self._do_analysis())
 
         ttk.Button(input_frame, text="Анализировать", command=self._do_analysis).pack(side=tk.LEFT, padx=5)
 
@@ -308,14 +344,118 @@ class AnalysisPanel(ttk.Frame):
                                                        font=("Arial", 10), height=20)
         self.analysis_text.pack(fill=tk.BOTH, expand=True)
 
-        # Заглушка
-        self.analysis_text.insert(tk.END, "Модуль LLM будет подключён на Этапе 6 (по плану ТЗ).\n"
-                                          "Здесь будет отображаться расширенный анализ запросов.")
+        # Кнопка экспорта (для senior и dev)
+        if self.current_user and self.current_user.get("Role") in ("senior", "dev"):
+            ttk.Button(self, text="📄 Экспортировать ответ",
+                       command=self._export_response).pack(pady=5)
+
+        if self.llm_manager:
+            status = "✅" if self.llm_manager.check_availability() else "❌"
+            self.analysis_text.insert(tk.END, f"LLM подключена: {status}\nГотова к анализу запросов.")
+        else:
+            self.analysis_text.insert(tk.END, "LLM-модуль не подключён.")
+
+    def _show_formatted_text(self, text: str, tag: str = None):
+        """Отображает текст с форматированием."""
+        self.analysis_text.delete(1.0, tk.END)
+
+        if tag:
+            self.analysis_text.insert(tk.END, text, tag)
+            return
+
+        self.analysis_text.tag_configure("bold", font=("Arial", 10, "bold"))
+        self.analysis_text.tag_configure("header", font=("Arial", 11, "bold"), foreground="#2c3e50")
+        self.analysis_text.tag_configure("list_item", font=("Arial", 10), lmargin1=20, lmargin2=30)
+        self.analysis_text.tag_configure("error", font=("Arial", 10), foreground="red")
+        self.analysis_text.tag_configure("disclaimer", font=("Arial", 9, "italic"), foreground="#7f8c8d")
+
+        for line in text.split('\n'):
+            stripped = line.strip()
+
+            if stripped.startswith('⚠️ Информация носит справочный'):
+                self.analysis_text.insert(tk.END, line + '\n', "disclaimer")
+            elif '**' in stripped and stripped.startswith('**'):
+                clean = stripped.replace('**', '')
+                self.analysis_text.insert(tk.END, clean + '\n', "header")
+            elif stripped.startswith('* ') or stripped.startswith('  '):
+                self.analysis_text.insert(tk.END, line + '\n', "list_item")
+            elif '**' in stripped:
+                clean = stripped.replace('**', '')
+                self.analysis_text.insert(tk.END, clean + '\n', "bold")
+            else:
+                self.analysis_text.insert(tk.END, line + '\n')
 
     def _do_analysis(self):
-        """Выполнение LLM-анализа (заглушка)."""
-        messagebox.showinfo("Информация", "LLM-модуль будет подключён позже (Этап 6 по ТЗ).")
+        """Выполнение LLM-анализа с подробным логированием."""
+        if not self.llm_manager:
+            messagebox.showinfo("Информация", "LLM-модуль не подключён.")
+            return
 
+        query = self.llm_query.get().strip()
+        if not query:
+            messagebox.showwarning("Внимание", "Введите запрос для анализа")
+            return
+
+        # --- Логирование: Шаг 1 — Парсинг запроса ---
+        from query_parser import QueryParser
+        parser = QueryParser()
+        parsed = parser.parse_query(query)
+
+        logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Исходный запрос: '{query}'")
+        logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Intent: {parsed.get('intent', 'не определён')}")
+        logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Сущности: {parsed.get('entities', {})}")
+
+        # --- Если есть DBMSParser и AgentCore, делаем полный цикл ---
+        if self.dbms_parser and hasattr(self, 'agent'):
+            try:
+                # Получаем результат от AgentCore
+                result = self.agent.process_query(parsed.get("intent", ""), parsed.get("entities", {}))
+
+                # Формируем промпт для LLM через DBMSParser
+                llm_prompt = self.dbms_parser.format_for_llm(result)
+
+                # Логирование: Шаг 2 — Сформированный ввод нейросети
+                logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Сформированный промпт:\n{llm_prompt}")
+
+                # Отправляем в LLM
+                response = self.llm_manager.generate_response(llm_prompt)
+            except Exception as e:
+                logging.getLogger("NeuroPharm.LLM").error(f"[LLM-анализ] Ошибка полного цикла: {e}")
+                response = self.llm_manager.generate_response(query)
+        else:
+            # Простой режим: отправляем запрос напрямую
+            logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Прямой запрос к LLM (без AgentCore)")
+            response = self.llm_manager.generate_response(query)
+
+        # --- Логирование: Шаг 3 — Ответ модели ---
+        if response:
+            logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Ответ получен ({len(response)} символов)")
+            logging.getLogger("NeuroPharm.LLM").debug(f"[LLM-анализ] Текст ответа:\n{response}")
+        else:
+            logging.getLogger("NeuroPharm.LLM").error("[LLM-анализ] Ответ не получен")
+
+        # Вывод в интерфейс
+        if response:
+            self._show_formatted_text(response)
+        else:
+            self._show_formatted_text("❌ Не удалось получить ответ от LLM.\n"
+                                      "Проверьте, что Ollama запущена (ollama serve).", "error")
+
+    def _export_response(self):
+        """Экспорт ответа модели в файл."""
+        content = self.analysis_text.get(1.0, tk.END).strip()
+        if not content or "LLM подключена" in content:
+            messagebox.showwarning("Внимание", "Нет результата анализа для экспорта")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"llm_export_{timestamp}.txt"
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        messagebox.showinfo("Экспорт", f"Результат анализа сохранён в файл: {filename}")
+        logging.getLogger("NeuroPharm.LLM").info(f"[LLM-анализ] Ответ экспортирован в {filename}")
 
 class LogConsole(tk.Toplevel):
     """
@@ -519,39 +659,131 @@ class SettingsWindow(tk.Toplevel):
     Окно настроек системы (п. 4.2.6).
     """
 
-    def __init__(self, parent):
+    def __init__(self, parent, llm_manager=None):
         super().__init__(parent)
+        self.llm_manager = llm_manager
         self.title("Настройки системы")
-        self.geometry("500x400")
+        self.geometry("500x450")
+        self.resizable(False, False)
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Вкладка FTP
-        ftp_frame = ttk.Frame(notebook)
-        notebook.add(ftp_frame, text="FTP")
-
-        ttk.Label(ftp_frame, text="Адрес сервера:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        ttk.Entry(ftp_frame, width=40).grid(row=0, column=1, padx=5, pady=5)
-
-        ttk.Label(ftp_frame, text="Порт:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        ttk.Entry(ftp_frame, width=10).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-
-        # Вкладка LLM
+        # ===== Вкладка LLM =====
         llm_frame = ttk.Frame(notebook)
-        notebook.add(llm_frame, text="LLM")
+        notebook.add(llm_frame, text="🤖 LLM")
 
-        ttk.Label(llm_frame, text="Макс. длина ответа:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        ttk.Entry(llm_frame, width=20).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(llm_frame, text="Максимальная длина ответа (токенов):", font=("Arial", 10)).grid(
+            row=0, column=0, sticky=tk.W, padx=10, pady=(15, 5))
+        self.max_tokens_var = tk.StringVar(value=str(llm_manager.max_tokens if llm_manager else 512))
+        ttk.Entry(llm_frame, textvariable=self.max_tokens_var, width=15, font=("Arial", 10)).grid(
+            row=0, column=1, sticky=tk.W, padx=10, pady=(15, 5))
+        ttk.Label(llm_frame, text="(50–4096)", foreground="gray").grid(
+            row=0, column=2, sticky=tk.W, padx=5, pady=(15, 5))
 
-        ttk.Label(llm_frame, text="Температура:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        ttk.Entry(llm_frame, width=10).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(llm_frame, text="Температура генерации:", font=("Arial", 10)).grid(
+            row=1, column=0, sticky=tk.W, padx=10, pady=5)
+        self.temperature_var = tk.StringVar(value=str(llm_manager.temperature if llm_manager else 0.7))
+        ttk.Entry(llm_frame, textvariable=self.temperature_var, width=15, font=("Arial", 10)).grid(
+            row=1, column=1, sticky=tk.W, padx=10, pady=5)
+        ttk.Label(llm_frame, text="(0.0–2.0)", foreground="gray").grid(
+            row=1, column=2, sticky=tk.W, padx=5, pady=5)
 
-        # Кнопка сохранения
-        ttk.Button(self, text="Сохранить настройки", command=lambda: messagebox.showinfo(
-            "Настройки", "Функционал сохранения будет реализован на следующих этапах")
-                   ).pack(pady=10)
+        ttk.Label(llm_frame, text="Таймаут запроса (сек):", font=("Arial", 10)).grid(
+            row=2, column=0, sticky=tk.W, padx=10, pady=5)
+        self.timeout_var = tk.StringVar(value=str(llm_manager.timeout if llm_manager else 120))
+        ttk.Entry(llm_frame, textvariable=self.timeout_var, width=15, font=("Arial", 10)).grid(
+            row=2, column=1, sticky=tk.W, padx=10, pady=5)
+        ttk.Label(llm_frame, text="(30–600)", foreground="gray").grid(
+            row=2, column=2, sticky=tk.W, padx=5, pady=5)
 
+        ttk.Label(llm_frame, text="Модель:", font=("Arial", 10)).grid(
+            row=3, column=0, sticky=tk.W, padx=10, pady=5)
+        self.model_var = tk.StringVar(value=llm_manager.model_name if llm_manager else "llama3.1:8b")
+        ttk.Entry(llm_frame, textvariable=self.model_var, width=25, font=("Arial", 10)).grid(
+            row=3, column=1, sticky=tk.W, padx=10, pady=5)
+
+        # Кнопка проверки соединения
+        ttk.Button(llm_frame, text="Проверить соединение", command=self._check_llm).grid(
+            row=4, column=0, columnspan=3, pady=15)
+        self.llm_status_label = ttk.Label(llm_frame, text="", font=("Arial", 9))
+        self.llm_status_label.grid(row=5, column=0, columnspan=3)
+
+        # ===== Вкладка FTP =====
+        ftp_frame = ttk.Frame(notebook)
+        notebook.add(ftp_frame, text="📁 FTP")
+
+        ttk.Label(ftp_frame, text="Настройки FTP-сервера", font=("Arial", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, pady=10, padx=10, sticky=tk.W)
+
+        ttk.Label(ftp_frame, text="Адрес сервера:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
+        self.ftp_host_var = tk.StringVar(value="ftp.example.com")
+        ttk.Entry(ftp_frame, textvariable=self.ftp_host_var, width=30).grid(row=1, column=1, padx=10, pady=5)
+
+        ttk.Label(ftp_frame, text="Порт:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
+        self.ftp_port_var = tk.StringVar(value="21")
+        ttk.Entry(ftp_frame, textvariable=self.ftp_port_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10,
+                                                                            pady=5)
+
+        ttk.Label(ftp_frame, text="Пользователь:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=5)
+        self.ftp_user_var = tk.StringVar(value="anonymous")
+        ttk.Entry(ftp_frame, textvariable=self.ftp_user_var, width=30).grid(row=3, column=1, padx=10, pady=5)
+
+        ttk.Label(ftp_frame, text="Пароль:").grid(row=4, column=0, sticky=tk.W, padx=10, pady=5)
+        self.ftp_pass_var = tk.StringVar()
+        ttk.Entry(ftp_frame, textvariable=self.ftp_pass_var, width=30, show="•").grid(row=4, column=1, padx=10, pady=5)
+
+        # ===== Кнопки =====
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        ttk.Button(btn_frame, text="💾 Сохранить настройки", command=self._save_settings).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="🔄 По умолчанию", command=self._reset_defaults).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Закрыть", command=self.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def _check_llm(self):
+        """Проверка соединения с Ollama."""
+        if self.llm_manager:
+            if self.llm_manager.check_availability():
+                self.llm_status_label.config(text="✅ Соединение установлено", foreground="green")
+            else:
+                self.llm_status_label.config(text="❌ Сервер недоступен", foreground="red")
+        else:
+            self.llm_status_label.config(text="⚠️ LLM-менеджер не инициализирован", foreground="orange")
+
+    def _save_settings(self):
+        """Сохранение настроек."""
+        try:
+            if self.llm_manager:
+                self.llm_manager.max_tokens = int(self.max_tokens_var.get())
+                self.llm_manager.temperature = float(self.temperature_var.get())
+                self.llm_manager.timeout = int(self.timeout_var.get())
+                new_model = self.model_var.get().strip()
+                if new_model:
+                    self.llm_manager.model_name = new_model
+
+            # FTP настройки пока сохраняем в лог (будет реализовано в ftp_agent.py)
+            logging.getLogger("NeuroPharm.GUI").info(
+                f"Настройки сохранены: LLM(max_tokens={self.max_tokens_var.get()}, "
+                f"temperature={self.temperature_var.get()}, timeout={self.timeout_var.get()}), "
+                f"FTP(host={self.ftp_host_var.get()}, port={self.ftp_port_var.get()})"
+            )
+
+            messagebox.showinfo("Настройки", "Настройки успешно сохранены.")
+        except ValueError as e:
+            messagebox.showerror("Ошибка", f"Некорректное значение: {e}")
+
+    def _reset_defaults(self):
+        """Сброс настроек на значения по умолчанию."""
+        self.max_tokens_var.set("512")
+        self.temperature_var.set("0.7")
+        self.timeout_var.set("120")
+        self.model_var.set("llama3.1:8b")
+        self.ftp_host_var.set("ftp.example.com")
+        self.ftp_port_var.set("21")
+        self.ftp_user_var.set("anonymous")
+        self.ftp_pass_var.set("")
+        messagebox.showinfo("Настройки", "Настройки сброшены на значения по умолчанию.")
 
 class MainApplication:
     """
@@ -571,6 +803,8 @@ class MainApplication:
 
         # Показываем диалог входа
         self._show_login()
+
+        self._open_windows = {}
 
     def _init_modules(self):
         """Инициализация всех модулей системы."""
@@ -600,6 +834,9 @@ class MainApplication:
 
         # Парсеры
         self.dbms_parser = DBMSParser()
+
+        #LLM
+        self.llm_manager = LLMManager()
 
         def setup_logging():
             """Настройка единого логирования для всего приложения."""
@@ -653,15 +890,14 @@ class MainApplication:
         # Кнопки в зависимости от роли
         if self.current_user["Role"] in ("senior", "dev"):
             ttk.Button(header, text="📋 Консоль логов",
-                       command=lambda: LogConsole(self.root)).pack(side=tk.RIGHT, padx=5)
+                       command=self._show_log_console).pack(side=tk.RIGHT, padx=5)
 
         if self.current_user["Role"] == "dev":
             ttk.Button(header, text="👥 Пользователи",
-                       command=lambda: UserManagementWindow(self.root, self.user_mgr, self.current_user["ID"])
-                       ).pack(side=tk.RIGHT, padx=5)
+                       command=self._show_user_management).pack(side=tk.RIGHT, padx=5)
 
         ttk.Button(header, text="⚙️ Настройки",
-                   command=lambda: SettingsWindow(self.root)).pack(side=tk.RIGHT, padx=5)
+                   command=self._show_settings).pack(side=tk.RIGHT, padx=5)
 
         # Основной контент (вкладки)
         notebook = ttk.Notebook(self.root)
@@ -672,7 +908,8 @@ class MainApplication:
         notebook.add(search_panel, text="🔍 Поиск")
 
         # Вкладка анализа
-        analysis_panel = AnalysisPanel(notebook)
+        analysis_panel = AnalysisPanel(notebook, self.llm_manager, self.dbms_parser, self.current_user)
+        analysis_panel.agent = self.agent
         notebook.add(analysis_panel, text="🤖 Анализ (LLM)")
 
         # Строка состояния
@@ -687,6 +924,39 @@ class MainApplication:
     def run(self):
         """Запуск приложения."""
         self.root.mainloop()
+
+    def _show_log_console(self):
+        """Показ консоли логов (один экземпляр)."""
+        if "log_console" in self._open_windows and self._open_windows["log_console"].winfo_exists():
+            self._open_windows["log_console"].lift()
+            return
+        window = LogConsole(self.root)
+        self._open_windows["log_console"] = window
+        window.protocol("WM_DELETE_WINDOW", lambda: self._close_window("log_console"))
+
+    def _show_user_management(self):
+        """Показ управления пользователями (один экземпляр)."""
+        if "user_mgmt" in self._open_windows and self._open_windows["user_mgmt"].winfo_exists():
+            self._open_windows["user_mgmt"].lift()
+            return
+        window = UserManagementWindow(self.root, self.user_mgr, self.current_user["ID"])
+        self._open_windows["user_mgmt"] = window
+        window.protocol("WM_DELETE_WINDOW", lambda: self._close_window("user_mgmt"))
+
+    def _show_settings(self):
+        """Показ настроек (один экземпляр)."""
+        if "settings" in self._open_windows and self._open_windows["settings"].winfo_exists():
+            self._open_windows["settings"].lift()
+            return
+        window = SettingsWindow(self.root, self.llm_manager)
+        self._open_windows["settings"] = window
+        window.protocol("WM_DELETE_WINDOW", lambda: self._close_window("settings"))
+
+    def _close_window(self, key: str):
+        """Закрытие окна и удаление из словаря."""
+        if key in self._open_windows:
+            self._open_windows[key].destroy()
+            del self._open_windows[key]
 
 
 # ============= ТОЧКА ВХОДА =============
