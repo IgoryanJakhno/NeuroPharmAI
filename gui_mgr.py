@@ -25,7 +25,7 @@ from typing import Optional, Dict, Any
 from data_base_mgr import DataBaseManager, AgentCore
 from query_parser import QueryParser
 from dbms_parser import DBMSParser
-
+from llm_mgr import LLMManager
 
 class LoginDialog(tk.Toplevel):
     """
@@ -285,10 +285,9 @@ class AnalysisPanel(ttk.Frame):
     """
     Панель LLM-анализа (п. 4.2.6).
     """
-
     def __init__(self, parent, llm_manager=None):
         super().__init__(parent)
-        self.llm_manager = llm_manager  # Будет подключён позже на Этапе 6
+        self.llm_manager = llm_manager
 
         # Поле ввода
         input_frame = ttk.Frame(self)
@@ -297,6 +296,7 @@ class AnalysisPanel(ttk.Frame):
         ttk.Label(input_frame, text="🤖 Запрос к LLM:", font=("Arial", 11)).pack(side=tk.LEFT)
         self.llm_query = ttk.Entry(input_frame, width=50, font=("Arial", 11))
         self.llm_query.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+        self.llm_query.bind("<Return>", lambda e: self._do_analysis())
 
         ttk.Button(input_frame, text="Анализировать", command=self._do_analysis).pack(side=tk.LEFT, padx=5)
 
@@ -308,14 +308,34 @@ class AnalysisPanel(ttk.Frame):
                                                        font=("Arial", 10), height=20)
         self.analysis_text.pack(fill=tk.BOTH, expand=True)
 
-        # Заглушка
-        self.analysis_text.insert(tk.END, "Модуль LLM будет подключён на Этапе 6 (по плану ТЗ).\n"
-                                          "Здесь будет отображаться расширенный анализ запросов.")
+        if self.llm_manager:
+            status = "✅" if self.llm_manager.check_availability() else "❌"
+            self.analysis_text.insert(tk.END, f"LLM подключена: {status}\nГотова к анализу запросов.")
+        else:
+            self.analysis_text.insert(tk.END, "LLM-модуль не подключён.")
 
     def _do_analysis(self):
-        """Выполнение LLM-анализа (заглушка)."""
-        messagebox.showinfo("Информация", "LLM-модуль будет подключён позже (Этап 6 по ТЗ).")
+        """Выполнение LLM-анализа."""
+        if not self.llm_manager:
+            messagebox.showinfo("Информация", "LLM-модуль не подключён.")
+            return
 
+        query = self.llm_query.get().strip()
+        if not query:
+            messagebox.showwarning("Внимание", "Введите запрос для анализа")
+            return
+
+        self.analysis_text.delete(1.0, tk.END)
+        self.analysis_text.insert(tk.END, "⏳ Идёт анализ...\n")
+
+        response = self.llm_manager.generate_response(query)
+
+        self.analysis_text.delete(1.0, tk.END)
+        if response:
+            self.analysis_text.insert(tk.END, response)
+        else:
+            self.analysis_text.insert(tk.END, "❌ Не удалось получить ответ от LLM.\n"
+                                              "Проверьте, что Ollama запущена (ollama serve).")
 
 class LogConsole(tk.Toplevel):
     """
@@ -601,6 +621,9 @@ class MainApplication:
         # Парсеры
         self.dbms_parser = DBMSParser()
 
+        #LLM
+        self.llm_manager = LLMManager()
+
         def setup_logging():
             """Настройка единого логирования для всего приложения."""
             logger = logging.getLogger()
@@ -672,7 +695,7 @@ class MainApplication:
         notebook.add(search_panel, text="🔍 Поиск")
 
         # Вкладка анализа
-        analysis_panel = AnalysisPanel(notebook)
+        analysis_panel = AnalysisPanel(notebook, self.llm_manager)
         notebook.add(analysis_panel, text="🤖 Анализ (LLM)")
 
         # Строка состояния
