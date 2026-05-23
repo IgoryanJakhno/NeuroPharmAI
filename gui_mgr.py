@@ -597,39 +597,131 @@ class SettingsWindow(tk.Toplevel):
     Окно настроек системы (п. 4.2.6).
     """
 
-    def __init__(self, parent):
+    def __init__(self, parent, llm_manager=None):
         super().__init__(parent)
+        self.llm_manager = llm_manager
         self.title("Настройки системы")
-        self.geometry("500x400")
+        self.geometry("500x450")
+        self.resizable(False, False)
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Вкладка FTP
-        ftp_frame = ttk.Frame(notebook)
-        notebook.add(ftp_frame, text="FTP")
-
-        ttk.Label(ftp_frame, text="Адрес сервера:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        ttk.Entry(ftp_frame, width=40).grid(row=0, column=1, padx=5, pady=5)
-
-        ttk.Label(ftp_frame, text="Порт:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        ttk.Entry(ftp_frame, width=10).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-
-        # Вкладка LLM
+        # ===== Вкладка LLM =====
         llm_frame = ttk.Frame(notebook)
-        notebook.add(llm_frame, text="LLM")
+        notebook.add(llm_frame, text="🤖 LLM")
 
-        ttk.Label(llm_frame, text="Макс. длина ответа:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        ttk.Entry(llm_frame, width=20).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(llm_frame, text="Максимальная длина ответа (токенов):", font=("Arial", 10)).grid(
+            row=0, column=0, sticky=tk.W, padx=10, pady=(15, 5))
+        self.max_tokens_var = tk.StringVar(value=str(llm_manager.max_tokens if llm_manager else 512))
+        ttk.Entry(llm_frame, textvariable=self.max_tokens_var, width=15, font=("Arial", 10)).grid(
+            row=0, column=1, sticky=tk.W, padx=10, pady=(15, 5))
+        ttk.Label(llm_frame, text="(50–4096)", foreground="gray").grid(
+            row=0, column=2, sticky=tk.W, padx=5, pady=(15, 5))
 
-        ttk.Label(llm_frame, text="Температура:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        ttk.Entry(llm_frame, width=10).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(llm_frame, text="Температура генерации:", font=("Arial", 10)).grid(
+            row=1, column=0, sticky=tk.W, padx=10, pady=5)
+        self.temperature_var = tk.StringVar(value=str(llm_manager.temperature if llm_manager else 0.7))
+        ttk.Entry(llm_frame, textvariable=self.temperature_var, width=15, font=("Arial", 10)).grid(
+            row=1, column=1, sticky=tk.W, padx=10, pady=5)
+        ttk.Label(llm_frame, text="(0.0–2.0)", foreground="gray").grid(
+            row=1, column=2, sticky=tk.W, padx=5, pady=5)
 
-        # Кнопка сохранения
-        ttk.Button(self, text="Сохранить настройки", command=lambda: messagebox.showinfo(
-            "Настройки", "Функционал сохранения будет реализован на следующих этапах")
-                   ).pack(pady=10)
+        ttk.Label(llm_frame, text="Таймаут запроса (сек):", font=("Arial", 10)).grid(
+            row=2, column=0, sticky=tk.W, padx=10, pady=5)
+        self.timeout_var = tk.StringVar(value=str(llm_manager.timeout if llm_manager else 120))
+        ttk.Entry(llm_frame, textvariable=self.timeout_var, width=15, font=("Arial", 10)).grid(
+            row=2, column=1, sticky=tk.W, padx=10, pady=5)
+        ttk.Label(llm_frame, text="(30–600)", foreground="gray").grid(
+            row=2, column=2, sticky=tk.W, padx=5, pady=5)
 
+        ttk.Label(llm_frame, text="Модель:", font=("Arial", 10)).grid(
+            row=3, column=0, sticky=tk.W, padx=10, pady=5)
+        self.model_var = tk.StringVar(value=llm_manager.model_name if llm_manager else "llama3.1:8b")
+        ttk.Entry(llm_frame, textvariable=self.model_var, width=25, font=("Arial", 10)).grid(
+            row=3, column=1, sticky=tk.W, padx=10, pady=5)
+
+        # Кнопка проверки соединения
+        ttk.Button(llm_frame, text="Проверить соединение", command=self._check_llm).grid(
+            row=4, column=0, columnspan=3, pady=15)
+        self.llm_status_label = ttk.Label(llm_frame, text="", font=("Arial", 9))
+        self.llm_status_label.grid(row=5, column=0, columnspan=3)
+
+        # ===== Вкладка FTP =====
+        ftp_frame = ttk.Frame(notebook)
+        notebook.add(ftp_frame, text="📁 FTP")
+
+        ttk.Label(ftp_frame, text="Настройки FTP-сервера", font=("Arial", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, pady=10, padx=10, sticky=tk.W)
+
+        ttk.Label(ftp_frame, text="Адрес сервера:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
+        self.ftp_host_var = tk.StringVar(value="ftp.example.com")
+        ttk.Entry(ftp_frame, textvariable=self.ftp_host_var, width=30).grid(row=1, column=1, padx=10, pady=5)
+
+        ttk.Label(ftp_frame, text="Порт:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
+        self.ftp_port_var = tk.StringVar(value="21")
+        ttk.Entry(ftp_frame, textvariable=self.ftp_port_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10,
+                                                                            pady=5)
+
+        ttk.Label(ftp_frame, text="Пользователь:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=5)
+        self.ftp_user_var = tk.StringVar(value="anonymous")
+        ttk.Entry(ftp_frame, textvariable=self.ftp_user_var, width=30).grid(row=3, column=1, padx=10, pady=5)
+
+        ttk.Label(ftp_frame, text="Пароль:").grid(row=4, column=0, sticky=tk.W, padx=10, pady=5)
+        self.ftp_pass_var = tk.StringVar()
+        ttk.Entry(ftp_frame, textvariable=self.ftp_pass_var, width=30, show="•").grid(row=4, column=1, padx=10, pady=5)
+
+        # ===== Кнопки =====
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        ttk.Button(btn_frame, text="💾 Сохранить настройки", command=self._save_settings).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="🔄 По умолчанию", command=self._reset_defaults).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Закрыть", command=self.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def _check_llm(self):
+        """Проверка соединения с Ollama."""
+        if self.llm_manager:
+            if self.llm_manager.check_availability():
+                self.llm_status_label.config(text="✅ Соединение установлено", foreground="green")
+            else:
+                self.llm_status_label.config(text="❌ Сервер недоступен", foreground="red")
+        else:
+            self.llm_status_label.config(text="⚠️ LLM-менеджер не инициализирован", foreground="orange")
+
+    def _save_settings(self):
+        """Сохранение настроек."""
+        try:
+            if self.llm_manager:
+                self.llm_manager.max_tokens = int(self.max_tokens_var.get())
+                self.llm_manager.temperature = float(self.temperature_var.get())
+                self.llm_manager.timeout = int(self.timeout_var.get())
+                new_model = self.model_var.get().strip()
+                if new_model:
+                    self.llm_manager.model_name = new_model
+
+            # FTP настройки пока сохраняем в лог (будет реализовано в ftp_agent.py)
+            logging.getLogger("NeuroPharm.GUI").info(
+                f"Настройки сохранены: LLM(max_tokens={self.max_tokens_var.get()}, "
+                f"temperature={self.temperature_var.get()}, timeout={self.timeout_var.get()}), "
+                f"FTP(host={self.ftp_host_var.get()}, port={self.ftp_port_var.get()})"
+            )
+
+            messagebox.showinfo("Настройки", "Настройки успешно сохранены.")
+        except ValueError as e:
+            messagebox.showerror("Ошибка", f"Некорректное значение: {e}")
+
+    def _reset_defaults(self):
+        """Сброс настроек на значения по умолчанию."""
+        self.max_tokens_var.set("512")
+        self.temperature_var.set("0.7")
+        self.timeout_var.set("120")
+        self.model_var.set("llama3.1:8b")
+        self.ftp_host_var.set("ftp.example.com")
+        self.ftp_port_var.set("21")
+        self.ftp_user_var.set("anonymous")
+        self.ftp_pass_var.set("")
+        messagebox.showinfo("Настройки", "Настройки сброшены на значения по умолчанию.")
 
 class MainApplication:
     """
@@ -649,6 +741,8 @@ class MainApplication:
 
         # Показываем диалог входа
         self._show_login()
+
+        self._open_windows = {}
 
     def _init_modules(self):
         """Инициализация всех модулей системы."""
@@ -734,15 +828,14 @@ class MainApplication:
         # Кнопки в зависимости от роли
         if self.current_user["Role"] in ("senior", "dev"):
             ttk.Button(header, text="📋 Консоль логов",
-                       command=lambda: LogConsole(self.root)).pack(side=tk.RIGHT, padx=5)
+                       command=self._show_log_console).pack(side=tk.RIGHT, padx=5)
 
         if self.current_user["Role"] == "dev":
             ttk.Button(header, text="👥 Пользователи",
-                       command=lambda: UserManagementWindow(self.root, self.user_mgr, self.current_user["ID"])
-                       ).pack(side=tk.RIGHT, padx=5)
+                       command=self._show_user_management).pack(side=tk.RIGHT, padx=5)
 
         ttk.Button(header, text="⚙️ Настройки",
-                   command=lambda: SettingsWindow(self.root)).pack(side=tk.RIGHT, padx=5)
+                   command=self._show_settings).pack(side=tk.RIGHT, padx=5)
 
         # Основной контент (вкладки)
         notebook = ttk.Notebook(self.root)
@@ -769,6 +862,39 @@ class MainApplication:
     def run(self):
         """Запуск приложения."""
         self.root.mainloop()
+
+    def _show_log_console(self):
+        """Показ консоли логов (один экземпляр)."""
+        if "log_console" in self._open_windows and self._open_windows["log_console"].winfo_exists():
+            self._open_windows["log_console"].lift()
+            return
+        window = LogConsole(self.root)
+        self._open_windows["log_console"] = window
+        window.protocol("WM_DELETE_WINDOW", lambda: self._close_window("log_console"))
+
+    def _show_user_management(self):
+        """Показ управления пользователями (один экземпляр)."""
+        if "user_mgmt" in self._open_windows and self._open_windows["user_mgmt"].winfo_exists():
+            self._open_windows["user_mgmt"].lift()
+            return
+        window = UserManagementWindow(self.root, self.user_mgr, self.current_user["ID"])
+        self._open_windows["user_mgmt"] = window
+        window.protocol("WM_DELETE_WINDOW", lambda: self._close_window("user_mgmt"))
+
+    def _show_settings(self):
+        """Показ настроек (один экземпляр)."""
+        if "settings" in self._open_windows and self._open_windows["settings"].winfo_exists():
+            self._open_windows["settings"].lift()
+            return
+        window = SettingsWindow(self.root, self.llm_manager)
+        self._open_windows["settings"] = window
+        window.protocol("WM_DELETE_WINDOW", lambda: self._close_window("settings"))
+
+    def _close_window(self, key: str):
+        """Закрытие окна и удаление из словаря."""
+        if key in self._open_windows:
+            self._open_windows[key].destroy()
+            del self._open_windows[key]
 
 
 # ============= ТОЧКА ВХОДА =============

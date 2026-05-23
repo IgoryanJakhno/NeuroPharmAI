@@ -40,7 +40,7 @@ class LLMManager:
             model_name: str = "llama3.1:8b",
             api_url: str = "http://localhost:11434/api/generate",
             templates_path: str = "prompt_templates.json",
-            max_tokens: int = 1024,
+            max_tokens: int = 512,
             temperature: float = 0.7,
             timeout: int = 120
     ):
