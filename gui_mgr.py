@@ -70,6 +70,11 @@ class LoginDialog(tk.Toplevel):
         self.error_label = tk.Label(self, text="", bg="#f0f4f8", fg="red", font=("Arial", 9))
         self.error_label.pack()
 
+        self.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() - self.winfo_width()) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{x}+{y}")
+
     def _do_login(self):
         """Обработка входа."""
         login = self.login_entry.get()
@@ -795,6 +800,9 @@ class MainApplication:
         self.root.title("Нейро-фарм — Агент-поисковик лекарств")
         self.root.geometry("900x700")
 
+        # Скрываем главное окно до авторизации
+        self.root.withdraw()
+
         # Инициализация модулей
         self._init_modules()
 
@@ -875,8 +883,10 @@ class MainApplication:
             self.current_user = login_dialog.result
             self._init_med_database()
             self._build_main_ui()
+            # Показываем главное окно после успешной авторизации
+            self.root.deiconify()  # Или self.root.withdraw(False) – показывает окно
         else:
-            self.root.destroy()
+            self.root.destroy()  # Выход, если авторизация не пройдена
 
     def _build_main_ui(self):
         """Построение главного интерфейса."""
