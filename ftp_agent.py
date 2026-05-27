@@ -383,33 +383,33 @@ class FTPAgent:
 
 
 # ============= ТЕСТОВЫЙ БЛОК =============
-if __name__ == "__main__":
-    # Настройка логирования
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    print("=" * 60)
-    print("ТЕСТИРОВАНИЕ FTP-АГЕНТА")
-    print("=" * 60)
-
-    # Создаём агента с настройками по умолчанию (РОСЛЕК)
-    agent = FTPAgent(
-        host="ftp.aptekamos.ru",
-        port=21,
-        username="anonymous",
-        password="",
-        remote_file="egk_extend306.zip",
-        local_dir="."
-    )
-
-    # Проверяем наличие обновлений
-    print("\n1. Проверка обновлений...")
-    has_update, msg = agent.check_for_updates()
-    print(f"   Результат: {msg}")
-
-    # Полное обновление
-    print("\n2. Запуск полного обновления...")
-    success, msg = agent.update_database()
-    print(f"   Результат: {'✅' if success else '❌'} {msg}")
+# if __name__ == "__main__":
+#     # Настройка логирования
+#     logging.basicConfig(
+#         level=logging.DEBUG,
+#         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+#     )
+#
+#     print("=" * 60)
+#     print("ТЕСТИРОВАНИЕ FTP-АГЕНТА")
+#     print("=" * 60)
+#
+#     # Создаём агента с настройками по умолчанию (РОСЛЕК)
+#     agent = FTPAgent(
+#         host="ftp.aptekamos.ru",
+#         port=21,
+#         username="anonymous",
+#         password="",
+#         remote_file="egk_extend306.zip",
+#         local_dir="."
+#     )
+#
+#     # Проверяем наличие обновлений
+#     print("\n1. Проверка обновлений...")
+#     has_update, msg = agent.check_for_updates()
+#     print(f"   Результат: {msg}")
+#
+#     # Полное обновление
+#     print("\n2. Запуск полного обновления...")
+#     success, msg = agent.update_database()
+#     print(f"   Результат: {'✅' if success else '❌'} {msg}")
