@@ -27,6 +27,7 @@ from query_parser import QueryParser
 from dbms_parser import DBMSParser
 from llm_mgr import LLMManager
 from ftp_agent import FTPAgent
+from site_parser import SiteParser
 
 class LoginDialog(tk.Toplevel):
     """
@@ -856,6 +857,8 @@ class MainApplication:
 
         self.ftp_agent = FTPAgent()
 
+        self.site_parser = SiteParser()
+
     def _init_modules(self):
         """Инициализация всех модулей системы."""
         from auth import DatabaseManager as AuthDB, Authenticator
@@ -880,7 +883,7 @@ class MainApplication:
         self.med_db_initialized = False
 
         # Ядро агента
-        self.agent = AgentCore(self.med_db)
+        self.agent = AgentCore()
 
         # Парсеры
         self.dbms_parser = DBMSParser()

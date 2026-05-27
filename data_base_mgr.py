@@ -1068,41 +1068,136 @@ class DosageFilterHandler(BaseQueryHandler):
         return db_manager.search_drugs_by_dosage(value, unit)
 
 class CompareDrugsHandler(BaseQueryHandler):
-    """Обработчик: сравнение двух препаратов."""
     def can_handle(self, intent: str) -> bool:
         return intent == "compare_drugs"
 
-    def handle(self, entities, db_manager):
+    def handle(self, entities, db_manager, llm_manager=None, site_parser=None):
         drug1 = entities.get("drug_name")
         drug2 = entities.get("drug_name2")
         if not drug1 or not drug2:
             return {"error": "Укажите два препарата для сравнения"}
-        return db_manager.compare_drugs(drug1, drug2)
 
+        # Локальное сравнение (базовое)
+        local_result = db_manager.compare_drugs(drug1, drug2)
+        if "error" in local_result:
+            return local_result
+
+        # Если есть интернет и LLM, улучшаем ответ
+        if site_parser and llm_manager and site_parser.check_connectivity():
+            instr1 = site_parser.get_drug_instruction(drug1)
+            instr2 = site_parser.get_drug_instruction(drug2)
+            if instr1.get("instruction") and instr2.get("instruction"):
+                prompt = f"""Сравни два препарата: "{drug1}" и "{drug2}" на основе их официальных инструкций. \n
+                Инструкция для {drug1}: \n
+                {instr1['instruction'][:3000]} \n
+                Инструкция для {drug2}: \n 
+                {instr2['instruction'][:3000]} \n
+
+                Выдели основные сходства и различия по показаниям, противопоказаниям, побочным эффектам, форме выпуска и производителям. Ответ должен быть структурированным, с предупреждением о справочном характере информации.
+                """
+                llm_response = llm_manager.generate_response(prompt)
+                if llm_response:
+                    return {
+                        "intent": "compare_drugs",
+                        "result": llm_response,
+                        "source": "web"
+                    }
+        # Если нет интернета или LLM не ответила, возвращаем локальное сравнение с предупреждением
+        local_result["warning"] = "Сравнение основано только на локальных данных. Для более точного анализа подключите интернет."
+        return local_result
 
 class InteractionCheckHandler(BaseQueryHandler):
     """Обработчик: проверка взаимодействия препаратов."""
     def can_handle(self, intent: str) -> bool:
         return intent == "check_interaction"
 
-    def handle(self, entities, db_manager):
+    def handle(self, entities, db_manager, llm_manager=None, site_parser=None):
         drug1 = entities.get("drug_name")
         drug2 = entities.get("drug_name2")
         if not drug1 or not drug2:
-            return {"error": "Укажите два препарата для проверки взаимодействия"}
-        return db_manager.check_drug_interaction(drug1, drug2)
+            return {"error": "Укажите два препарата для сравнения"}
+
+        # Локальное сравнение (базовое)
+        local_result = db_manager.compare_drugs(drug1, drug2)
+        if "error" in local_result:
+            return local_result
+
+        # Если есть интернет и LLM, улучшаем ответ
+        if site_parser and llm_manager and site_parser.check_connectivity():
+            instr1 = site_parser.get_drug_instruction(drug1)
+            instr2 = site_parser.get_drug_instruction(drug2)
+            if instr1.get("instruction") and instr2.get("instruction"):
+                prompt = f"""Проверь два препарата на безопасность совместного применения: "{drug1}" и "{drug2}" на основе их официальных инструкций. \n
+                Инструкция для {drug1}: \n
+                {instr1['instruction'][:3000]} \n
+                Инструкция для {drug2}: \n 
+                {instr2['instruction'][:3000]} \n
+
+                Обязательно учитывай поля (если такие есть) "Взаимодействие", "Особые указания", "Передозировка" и "Особые указания". В конце обязательно сделай предупреждение о консультации со специалистом.
+                """
+                llm_response = llm_manager.generate_response(prompt)
+                if llm_response:
+                    return {
+                        "intent": "check_interaction",
+                        "result": llm_response,
+                        "source": "web"
+                    }
+        # Если нет интернета или LLM не ответила, возвращаем локальное сравнение с предупреждением
+        local_result[
+            "warning"] = "Сравнение основано только на локальных данных. Для более точного анализа подключите интернет."
+        return local_result
 
 
 class SideEffectsHandler(BaseQueryHandler):
-    """Обработчик: побочные эффекты препарата."""
     def can_handle(self, intent: str) -> bool:
         return intent == "get_side_effects"
 
-    def handle(self, entities, db_manager):
+    def handle(self, entities, db_manager, llm_manager=None, site_parser=None):
         drug = entities.get("drug_name") or entities.get("drug")
         if not drug:
             return {"error": "Не указано название препарата"}
-        return db_manager.get_drug_side_effects(drug)
+
+        # Локальные данные (заглушка)
+        local_result = db_manager.get_drug_side_effects(drug)
+        if "error" in local_result:
+            # Если локально не найден, всё равно пробуем интернет
+            pass
+
+        # Если есть интернет и парсер, пытаемся получить инструкцию
+        if site_parser and llm_manager:
+            if not site_parser.check_connectivity():
+                local_result["warning"] = "Нет подключения к интернету. Информация о побочных эффектах может быть неполной."
+                return local_result
+
+            instruction_data = site_parser.get_drug_instruction(drug)
+            if instruction_data.get("error"):
+                local_result["warning"] = f"Не удалось получить инструкцию с сайта: {instruction_data['error']}. Используются локальные данные."
+                return local_result
+
+            # Формируем промпт для LLM на основе инструкции
+            prompt = f"""Ты - ИИ-ассистент для фармацевтических консультаций. \n
+            На основе официальной инструкции к препарату "{drug}" ответь на вопрос: \n 
+            Какие у него побочные эффекты? Перечисли их в виде структурированного списка. \n
+
+            Инструкция: \n
+            {instruction_data['instruction']} \n
+
+            В ответе обязательно добавь предупреждение: "Информация носит справочный характер. Перед применением проконсультируйтесь с врачом."
+            """
+            llm_response = llm_manager.generate_response(prompt)
+            if llm_response:
+                return {
+                    "intent": "get_side_effects",
+                    "result": llm_response,
+                    "source": "web",
+                    "url": instruction_data.get("url")
+                }
+            else:
+                local_result["warning"] = "LLM не ответила. Использованы локальные данные."
+        else:
+            local_result["warning"] = "Модуль интернет-поиска не доступен. Информация может быть неполной."
+
+        return local_result
 
 # --- 4. Ядро Агента (Мозг) ---
 class AgentCore:
@@ -1111,40 +1206,36 @@ class AgentCore:
     Получает запрос от NLU-модуля, находит подходящий обработчик и запускает его.
     """
 
-    def __init__(self, db_manager: DataBaseManager):
-        self.db = db_manager
-        # Реестр всех доступных сценариев обработки
-        self.handlers: List[BaseQueryHandler] = [
-            DiseaseToDrugHandler(),
-            DrugFullInfoHandler(),
-            FindSynonymsHandler(),
-            FindAnalogsHandler(),
-            ManufacturerFilterHandler(),
-            CountryFilterHandler(),
-            FormFilterHandler(),
-            DosageFilterHandler(),
-            CompareDrugsHandler(),
-            InteractionCheckHandler(),
-            SideEffectsHandler(),
-        ]
-        self.logger = logging.getLogger(__name__)
+    class AgentCore:
+        def __init__(self, db_manager: DataBaseManager, llm_manager=None, site_parser=None):
+            self.db = db_manager
+            self.llm_manager = llm_manager
+            self.site_parser = site_parser
+            self.handlers: List[BaseQueryHandler] = [
+                DiseaseToDrugHandler(),
+                DrugFullInfoHandler(),
+                FindSynonymsHandler(),
+                FindAnalogsHandler(),
+                ManufacturerFilterHandler(),
+                CountryFilterHandler(),
+                FormFilterHandler(),
+                DosageFilterHandler(),
+                CompareDrugsHandler(),
+                InteractionCheckHandler(),
+                SideEffectsHandler(),
+            ]
+            self.logger = logging.getLogger(__name__)
 
     def process_query(self, intent: str, entities: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Основной метод для обработки запроса.
-        """
-        self.logger.info(f"AgentCore: Получен запрос intent='{intent}', entities={entities}")
-
+        self.logger.info(f"AgentCore: intent='{intent}', entities={entities}")
         for handler in self.handlers:
             if handler.can_handle(intent):
-                self.logger.info(f"AgentCore: Запрос обрабатывается {handler.__class__.__name__}")
-                result = handler.handle(entities, self.db)
-                # Добавляем intent в ответ, если его там нет
+                self.logger.info(f"Обработчик: {handler.__class__.__name__}")
+                # Передаём llm_manager и site_parser, если они нужны обработчику
+                result = handler.handle(entities, self.db, self.llm_manager, self.site_parser)
                 if "intent" not in result:
                     result["intent"] = intent
                 return result
-
-        self.logger.warning(f"AgentCore: Не найден обработчик для intent='{intent}'")
         return {"error": f"Не могу обработать запрос типа '{intent}'", "intent": intent}
 
     def process_raw_query(self, user_text: str) -> Dict[str, Any]:

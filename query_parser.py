@@ -136,7 +136,7 @@ class QueryParser:
             user_text: Сырой текст запроса на русском языке.
 
         Returns:
-            Dict с ключами:
+            Dict с ключами: 
                 - intent (str): определённое намерение (например, "find_analog")
                 - entities (Dict): извлечённые сущности
                 - error (str, optional): сообщение об ошибке, если запрос некорректен
