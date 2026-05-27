@@ -69,7 +69,9 @@ INTENT_TRIGGERS = {
         "совместимость", "можно ли вместе", "взаимодействие",
         "можно ли принимать", "одновременно", "вместе",
         "сочетание", "совместный прием", "можно ли совмещать",
-        "можно ли пить", "опасно ли"
+        "можно ли пить", "опасно ли", "совместимы ли",
+        "взаимодействуют ли", "совместное применение",
+        "одновременный приём", "взаимодействие лекарств"
     ],
     "compare_drugs": [
         "сравни", "сравнение", "что лучше", "что эффективнее",
@@ -113,7 +115,8 @@ STOP_WORDS = {
     "какой", "какая", "какие", "есть", "будет",
     "пожалуйста", "спасибо", "привет", "помоги",
     "давай", "можешь", "можно", "ли", "все",
-    "еще", "очень", "быстро", "срочно"
+    "еще", "очень", "быстро", "срочно",
+    "совместимость", "можно ли вместе", "можно ли совмещать"
 }
 
 
@@ -236,43 +239,64 @@ class QueryParser:
         return meaningful_tokens
 
     def _detect_intent(self, clean_text: str, tokens: List[str]) -> Optional[str]:
-        """
-        Определение намерения пользователя по ключевым словам-триггерам.
-        Все intent'ы равноправны, побеждает набравший наибольший вес.
-        Порог срабатывания – 3 балла.
-        """
         text_lower = clean_text.lower()
         candidates = []
 
         for intent, triggers in INTENT_TRIGGERS.items():
             score = 0
             for trigger in triggers:
-                # Полное совпадение фразы (наибольший вес)
+                # Полное совпадение фразы – основной вес
                 if trigger in text_lower:
-                    score += 5
+                    # Для особо важных триггеров check_interaction даём больше баллов
+                    if intent == "check_interaction" and trigger in ("совместимость", "можно ли вместе",
+                                                                     "взаимодействие", "можно ли принимать"):
+                        score += 10
+                    else:
+                        score += 5
                 else:
-                    # Совпадение всех слов триггера в тексте (средний вес)
+                    # Частичное совпадение: все слова триггера присутствуют в токенах
                     trigger_words = trigger.split()
                     if all(word in tokens for word in trigger_words):
                         score += 3
                     else:
-                        # Совпадение отдельных слов (минимальный вес)
+                        # Отдельные слова из триггера
                         for word in trigger_words:
                             if word in tokens:
                                 score += 1
-            if score >= 3:  # Порог уверенности
+            if score >= 3:
                 candidates.append((intent, score))
 
         if not candidates:
-            # Если ничего не подошло, пробуем угадать по наличию сущностей
+            # Если ничего не подошло, пробуем угадать по наличию названия препарата
             if self._extract_drug_name(clean_text, tokens):
                 return "get_drug_info"
             return None
 
-        # Сортируем по убыванию очков, выбираем лучший
+        # Сортируем по убыванию баллов
         candidates.sort(key=lambda x: x[1], reverse=True)
+        best_intent, best_score = candidates[0]
         self.logger.info(f"QueryParser: Кандидаты intent: {candidates}")
-        return candidates[0][0]
+
+        # --- Эвристика: если в запросе явно два препарата и слова совместимости, назначаем check_interaction ---
+        # Проверяем, что лучший intent не check_interaction (иначе не нужно)
+        if best_intent != "check_interaction":
+            # Ищем два слова, начинающихся с заглавной буквы (кандидаты в названия препаратов)
+            words = clean_text.split()
+            capital_words = [w.strip('.,!?') for w in words if w and w[0].isupper() and len(w) > 1]
+            if len(capital_words) >= 2:
+                # Проверяем наличие союзов "и", "с", "вместе", "совместно" и ключевых слов
+                if " и " in text_lower or " с " in text_lower or " вместе " in text_lower or " совместно " in text_lower:
+                    interaction_keywords = ["можно", "совместим", "взаимодейств", "одновременн", "совместн", "вместе",
+                                            "опасно"]
+                    if any(kw in text_lower for kw in interaction_keywords):
+                        self.logger.info(
+                            f"Эвристика: обнаружены два препарата и ключевые слова, переключаем intent на check_interaction")
+                        return "check_interaction"
+            # Дополнительно: если есть два названия, извлечённые через _extract_drug_name_clean (уже есть в другом месте, но для надёжности)
+            # Здесь просто проверяем наличие двух слов с заглавной буквы без дополнительных условий – можно добавить
+        # --- конец эвристики ---
+
+        return best_intent
 
     def _extract_entities(self, clean_text: str, tokens: List[str], intent: str) -> Dict[str, Any]:
         entities = {}
