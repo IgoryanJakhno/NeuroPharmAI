@@ -27,6 +27,7 @@ from query_parser import QueryParser
 from dbms_parser import DBMSParser
 from llm_mgr import LLMManager
 from ftp_agent import FTPAgent
+from site_parser import SiteParser
 
 class LoginDialog(tk.Toplevel):
     """
@@ -852,14 +853,18 @@ class MainApplication:
         # Показываем диалог входа
         self._show_login()
 
+        # Окна открываются только один раз
         self._open_windows = {}
 
+        #FTP-модуль
         self.ftp_agent = FTPAgent()
+
 
     def _init_modules(self):
         """Инициализация всех модулей системы."""
         from auth import DatabaseManager as AuthDB, Authenticator
         from usr_mgr import UserManager
+        from site_parser import SiteParser
 
         # Настройка логирования для всего приложения
         logging.basicConfig(level=logging.DEBUG)
@@ -879,14 +884,17 @@ class MainApplication:
         self.med_db = DataBaseManager()
         self.med_db_initialized = False
 
-        # Ядро агента
-        self.agent = AgentCore(self.med_db)
-
         # Парсеры
         self.dbms_parser = DBMSParser()
 
-        #LLM
+        # LLM
         self.llm_manager = LLMManager()
+
+        # Парсер сайтов
+        self.site_parser = SiteParser()
+
+        # Ядро агента
+        self.agent = AgentCore(self.med_db, self.llm_manager, self.site_parser)
 
         def setup_logging():
             """Настройка единого логирования для всего приложения."""

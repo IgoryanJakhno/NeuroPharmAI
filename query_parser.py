@@ -76,6 +76,11 @@ INTENT_TRIGGERS = {
         "что дешевле", "отличие", "разница", "отличается",
         "сопоставление", "vs"
     ],
+    "get_side_effects": [
+        "побочные эффекты", "побочка", "побочное действие", "побочные действия",
+        "нежелательные реакции", "вред", "опасность", "что будет если",
+        "побочные явления", "побочки"
+    ],
 }
 
 # Единицы измерения дозировки
@@ -362,6 +367,11 @@ class QueryParser:
                 if drug:
                     entities["drug_name"] = drug.capitalize()
 
+        if intent in ("find_analog", "find_synonyms", "get_drug_info", "get_side_effects"):
+            drug = self._extract_drug_name_clean(clean_text, tokens)
+            if drug:
+                entities["drug_name"] = drug.capitalize()
+
         # Пост-очистка всех строковых значений (убираем возможные стоп-слова)
         for key in list(entities.keys()):
             val = entities[key]
@@ -560,6 +570,7 @@ class QueryParser:
             "filter_by_dosage": ["dosage_value"],
             "check_interaction": ["drug_name", "drug_name2"],
             "compare_drugs": ["drug_name", "drug_name2"],
+            "get_side_effects": ["drug_name"],
         }
         return required_map.get(intent, [])
 
@@ -618,6 +629,7 @@ class QueryParser:
             "filter_by_dosage": ["dosage_value"],
             "check_interaction": ["drug_name", "drug_name2"],
             "compare_drugs": ["drug_name", "drug_name2"],
+            "get_side_effects": ["drug_name"],
         }
         return required_map.get(intent, [])
 
