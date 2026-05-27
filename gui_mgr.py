@@ -740,6 +740,11 @@ class SettingsWindow(tk.Toplevel):
         self.ftp_pass_var = tk.StringVar()
         ttk.Entry(ftp_frame, textvariable=self.ftp_pass_var, width=30, show="•").grid(row=4, column=1, padx=10, pady=5)
 
+        ttk.Button(ftp_frame, text="Проверить соединение", command=self._check_ftp).grid(
+            row=5, column=0, columnspan=2, pady=15)
+        self.ftp_status_label = ttk.Label(ftp_frame, text="", font=("Arial", 9))
+        self.ftp_status_label.grid(row=6, column=0, columnspan=2)
+
         # ===== Кнопки =====
         btn_frame = ttk.Frame(self)
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -747,6 +752,34 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="💾 Сохранить настройки", command=self._save_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="🔄 По умолчанию", command=self._reset_defaults).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Закрыть", command=self.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def _check_ftp(self):
+        """Проверка соединения с FTP-сервером."""
+        if not self.ftp_agent:
+            self.ftp_status_label.config(text="⚠️ FTP-агент не инициализирован", foreground="orange")
+            return
+
+        # Применяем текущие настройки из полей ввода
+        self.ftp_agent.update_settings(
+            host=self.ftp_host_var.get().strip(),
+            port=int(self.ftp_port_var.get()),
+            username=self.ftp_user_var.get().strip(),
+            password=self.ftp_pass_var.get(),
+            remote_file="egk_extend306.zip",
+            local_dir="."
+        )
+
+        # Выполняем проверку
+        has_update, msg = self.ftp_agent.check_for_updates()
+
+        if has_update:
+            # Сервер доступен, но файл отличается или не найден
+            if "подключиться" in msg or "FTP" in msg:
+                self.ftp_status_label.config(text=f"❌ {msg}", foreground="red")
+            else:
+                self.ftp_status_label.config(text=f"🔄 Доступен: {msg}", foreground="orange")
+        else:
+            self.ftp_status_label.config(text=f"✅ {msg}", foreground="green")
 
     def _check_llm(self):
         """Проверка соединения с Ollama."""
@@ -791,7 +824,7 @@ class SettingsWindow(tk.Toplevel):
         self.temperature_var.set("0.7")
         self.timeout_var.set("120")
         self.model_var.set("llama3.1:8b")
-        self.ftp_host_var.set("ftp.example.com")
+        self.ftp_host_var.set("ftp.aptekamos.ru")
         self.ftp_port_var.set("21")
         self.ftp_user_var.set("anonymous")
         self.ftp_pass_var.set("")
