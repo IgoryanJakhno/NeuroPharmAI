@@ -26,6 +26,7 @@ from data_base_mgr import DataBaseManager, AgentCore
 from query_parser import QueryParser
 from dbms_parser import DBMSParser
 from llm_mgr import LLMManager
+from ftp_agent import FTPAgent
 
 class LoginDialog(tk.Toplevel):
     """
@@ -664,9 +665,10 @@ class SettingsWindow(tk.Toplevel):
     Окно настроек системы (п. 4.2.6).
     """
 
-    def __init__(self, parent, llm_manager=None):
+    def __init__(self, parent, llm_manager=None, ftp_agent=None):
         super().__init__(parent)
         self.llm_manager = llm_manager
+        self.ftp_agent = ftp_agent
         self.title("Настройки системы")
         self.geometry("500x450")
         self.resizable(False, False)
@@ -767,13 +769,18 @@ class SettingsWindow(tk.Toplevel):
                 if new_model:
                     self.llm_manager.model_name = new_model
 
-            # FTP настройки пока сохраняем в лог (будет реализовано в ftp_agent.py)
-            logging.getLogger("NeuroPharm.GUI").info(
-                f"Настройки сохранены: LLM(max_tokens={self.max_tokens_var.get()}, "
-                f"temperature={self.temperature_var.get()}, timeout={self.timeout_var.get()}), "
-                f"FTP(host={self.ftp_host_var.get()}, port={self.ftp_port_var.get()})"
-            )
+            # Сохраняем FTP настройки
+            if self.ftp_agent:
+                self.ftp_agent.update_settings(
+                    host=self.ftp_host_var.get().strip(),
+                    port=int(self.ftp_port_var.get()),
+                    username=self.ftp_user_var.get().strip(),
+                    password=self.ftp_pass_var.get(),
+                    remote_file="egk_extend306.zip",
+                    local_dir="."
+                )
 
+            logging.getLogger("NeuroPharm.GUI").info(f"Настройки сохранены")
             messagebox.showinfo("Настройки", "Настройки успешно сохранены.")
         except ValueError as e:
             messagebox.showerror("Ошибка", f"Некорректное значение: {e}")
@@ -813,6 +820,8 @@ class MainApplication:
         self._show_login()
 
         self._open_windows = {}
+
+        self.ftp_agent = FTPAgent()
 
     def _init_modules(self):
         """Инициализация всех модулей системы."""
@@ -958,7 +967,7 @@ class MainApplication:
         if "settings" in self._open_windows and self._open_windows["settings"].winfo_exists():
             self._open_windows["settings"].lift()
             return
-        window = SettingsWindow(self.root, self.llm_manager)
+        window = SettingsWindow(self.root, self.llm_manager, self.ftp_agent)
         self._open_windows["settings"] = window
         window.protocol("WM_DELETE_WINDOW", lambda: self._close_window("settings"))
 
