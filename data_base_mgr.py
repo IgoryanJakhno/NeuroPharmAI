@@ -693,7 +693,7 @@ class BaseQueryHandler(ABC):
         pass
 
     @abstractmethod
-    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
+    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager, llm_manager=None, site_parser=None) -> Dict[str, Any]:
         """Выполняет обработку запроса и возвращает структурированный JSON."""
         pass
 
@@ -718,7 +718,7 @@ class DiseaseToDrugHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
         return intent == "find_drug_by_disease"
 
-    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
+    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager, llm_manager=None, site_parser=None) -> Dict[str, Any]:
         disease = entities.get("disease")
         if not disease:
             return {"error": "Не указано название болезни"}
@@ -806,7 +806,7 @@ class DrugFullInfoHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
         return intent == "get_drug_info"
 
-    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
+    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager, llm_manager=None, site_parser=None) -> Dict[str, Any]:
         drug_name = entities.get("drug_name") or entities.get("drug")
         if not drug_name:
             return {"error": "Не указано название препарата"}
@@ -880,7 +880,7 @@ class FindSynonymsHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
         return intent == "find_synonyms"
 
-    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
+    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager, llm_manager=None, site_parser=None) -> Dict[str, Any]:
         raw_input = entities.get("mnn") or entities.get("drug_name") or entities.get("substance")
         if not raw_input:
             return {"error": "Не указано действующее вещество или торговое название"}
@@ -943,7 +943,7 @@ class FindAnalogsHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
         return intent == "find_analog"
 
-    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager) -> Dict[str, Any]:
+    def handle(self, entities: Dict[str, Any], db_manager: DataBaseManager, llm_manager=None, site_parser=None) -> Dict[str, Any]:
         drug_name = entities.get("drug_name") or entities.get("drug")
         if not drug_name:
             return {"error": "Не указано название препарата"}
@@ -1009,7 +1009,7 @@ class ManufacturerFilterHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
         return intent == "filter_by_manufacturer"
 
-    def handle(self, entities, db_manager):
+    def handle(self, entities, db_manager, llm_manager=None, site_parser=None):
         firm = entities.get("manufacturer") or entities.get("firm")
         if not firm:
             return {"error": "Не указан производитель"}
@@ -1039,7 +1039,7 @@ class CountryFilterHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
         return intent == "filter_by_country"
 
-    def handle(self, entities, db_manager):
+    def handle(self, entities, db_manager, llm_manager=None, site_parser=None):
         country = entities.get("country")
         if not country:
             return {"error": "Не указана страна"}
@@ -1049,7 +1049,7 @@ class FormFilterHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
         return intent == "filter_by_form"
 
-    def handle(self, entities, db_manager):
+    def handle(self, entities, db_manager, llm_manager=None, site_parser=None):
         form = entities.get("form") or entities.get("drug_form")
         if not form:
             return {"error": "Не указана лекарственная форма"}
@@ -1059,7 +1059,7 @@ class DosageFilterHandler(BaseQueryHandler):
     def can_handle(self, intent: str) -> bool:
         return intent == "filter_by_dosage"
 
-    def handle(self, entities, db_manager):
+    def handle(self, entities, db_manager, llm_manager=None, site_parser=None):
         try:
             value = float(entities.get("dosage_value"))
         except (TypeError, ValueError):
@@ -1206,25 +1206,24 @@ class AgentCore:
     Получает запрос от NLU-модуля, находит подходящий обработчик и запускает его.
     """
 
-    class AgentCore:
-        def __init__(self, db_manager: DataBaseManager, llm_manager=None, site_parser=None):
-            self.db = db_manager
-            self.llm_manager = llm_manager
-            self.site_parser = site_parser
-            self.handlers: List[BaseQueryHandler] = [
-                DiseaseToDrugHandler(),
-                DrugFullInfoHandler(),
-                FindSynonymsHandler(),
-                FindAnalogsHandler(),
-                ManufacturerFilterHandler(),
-                CountryFilterHandler(),
-                FormFilterHandler(),
-                DosageFilterHandler(),
-                CompareDrugsHandler(),
-                InteractionCheckHandler(),
-                SideEffectsHandler(),
-            ]
-            self.logger = logging.getLogger(__name__)
+    def __init__(self, db_manager: DataBaseManager, llm_manager=None, site_parser=None):
+        self.db = db_manager
+        self.llm_manager = llm_manager
+        self.site_parser = site_parser
+        self.logger = logging.getLogger(__name__)
+        self.handlers: List[BaseQueryHandler] = [
+            DiseaseToDrugHandler(),
+            DrugFullInfoHandler(),
+            FindSynonymsHandler(),
+            FindAnalogsHandler(),
+            ManufacturerFilterHandler(),
+            CountryFilterHandler(),
+            FormFilterHandler(),
+            DosageFilterHandler(),
+            CompareDrugsHandler(),
+            InteractionCheckHandler(),
+            SideEffectsHandler(),
+        ]
 
     def process_query(self, intent: str, entities: Dict[str, Any]) -> Dict[str, Any]:
         self.logger.info(f"AgentCore: intent='{intent}', entities={entities}")
