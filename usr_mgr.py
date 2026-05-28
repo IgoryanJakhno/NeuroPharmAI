@@ -833,322 +833,322 @@ class UserManager:
 
 # ============= ТЕСТОВАЯ ФУНКЦИЯ ДЛЯ РАБОТЫ ЧЕРЕЗ КОНСОЛЬ =============
 
-def test_user_manager_console():
-    """
-    Тестовая функция для работы с БД пользователей через консоль
-    """
-    import sys
-    import os
-
-    # Добавляем путь для импорта auth
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-    from auth import DatabaseManager, Authenticator
-
-    # Настройка логирования
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    print("=" * 60)
-    print("ТЕСТОВАЯ КОНСОЛЬ УПРАВЛЕНИЯ ПОЛЬЗОВАТЕЛЯМИ")
-    print("=" * 60)
-
-    # Инициализация БД
-    db_mgr = DatabaseManager("neuro_pharm_test.db")
-    if not db_mgr.connect():
-        print("❌ Ошибка подключения к БД")
-        return
-
-    # Инициализация аутентификатора для создания таблиц
-    auth = Authenticator(db_mgr)
-    if not auth.initialize_database():
-        print("❌ Ошибка инициализации БД")
-        return
-
-    # Создаем менеджер пользователей
-    user_mgr = UserManager(db_mgr)
-
-    print("✅ База данных инициализирована")
-    print("\nДоступные команды:")
-    print("  list [role] [expired] [locked] - Список пользователей")
-    print("  create <login> <password> [role] - Создать пользователя")
-    print("  info <user_id> - Информация о пользователе")
-    print("  update <user_id> [--username <name>] [--role <role>] - Обновить")
-    print("  delete <user_id> - Удалить пользователя")
-    print("  reset <user_id> <new_password> - Сбросить пароль")
-    print("  expiry <user_id> [days] - Обновить срок действия пароля")
-    print("  unlock <user_id> - Разблокировать пользователя")
-    print("  stats - Статистика")
-    print("  export [json|csv] - Экспорт данных")
-    print("  exit - Выход")
-    print("-" * 60)
-
-    # Получаем ID администратора для операций
-    admin = user_mgr.get_user_by_username("admin")
-    admin_id = admin['ID'] if admin else None
-
-    if not admin_id:
-        print("⚠️ Администратор не найден. Некоторые операции могут не работать.")
-
-    while True:
-        try:
-            command = input("\n> ").strip()
-
-            if not command:
-                continue
-
-            parts = command.split()
-            cmd = parts[0].lower()
-
-            # LIST - Список пользователей
-            if cmd == "list":
-                filters = {}
-
-                # Обработка фильтров
-                for part in parts[1:]:
-                    if part in ['user', 'senior', 'dev']:
-                        filters['role'] = part
-                    elif part == 'expired':
-                        filters['expired_passwords'] = True
-                    elif part == 'locked':
-                        filters['locked'] = True
-
-                users = user_mgr.get_all_users(filters)
-
-                print(f"\n📋 Список пользователей (всего: {len(users)}):")
-                print("-" * 80)
-                print(f"{'ID':<5} {'Логин':<20} {'Роль':<10} {'Срок пароля':<12} {'Статус':<15}")
-                print("-" * 80)
-
-                for user in users:
-                    status = []
-                    if user['Is_Locked']:
-                        status.append("🔒 ЗАБЛОКИРОВАН")
-                    elif user['Password_Expired']:
-                        status.append("⚠️ ПАРОЛЬ ИСТЕК")
-                    elif user['Days_Until_Expiry'] <= 14:
-                        status.append(f"⏰ {user['Days_Until_Expiry']} дн.")
-                    else:
-                        status.append("✅ Активен")
-
-                    print(f"{user['ID']:<5} {user['Username']:<20} {user['Role']:<10} "
-                          f"{user['Password_Expiry']:<12} {' '.join(status):<15}")
-
-            # CREATE - Создать пользователя
-            elif cmd == "create":
-                if len(parts) < 3:
-                    print("❌ Использование: create <login> <password> [role]")
-                    continue
-
-                username = parts[1]
-                password = parts[2]
-                role = parts[3] if len(parts) > 3 else 'user'
-
-                success, message, user_id = user_mgr.create_user(username, password, role, admin_id)
-
-                if success:
-                    print(f"✅ {message} (ID: {user_id})")
-                else:
-                    print(f"❌ {message}")
-
-            # INFO - Информация о пользователе
-            elif cmd == "info":
-                if len(parts) < 2:
-                    print("❌ Использование: info <user_id>")
-                    continue
-
-                try:
-                    user_id = int(parts[1])
-                    user = user_mgr.get_user_info(user_id)
-
-                    if user:
-                        print(f"\n📊 Информация о пользователе ID {user_id}:")
-                        print("-" * 40)
-                        print(f"Логин: {user['Username']}")
-                        print(f"Роль: {user['Role']}")
-                        print(f"Создан: {user['CreatedAt']}")
-                        print(f"Последний вход: {user['Last_Login'] or 'Никогда'}")
-                        print(f"Срок пароля до: {user['Password_Expiry']}")
-                        print(f"Статус пароля: {'Истек' if user['Password_Expired'] else f'Действует ({user['Days_Until_Expiry']} дн.)'}")
-                        print(f"Неудачных попыток: {user.get('Failed_Attempts', 0)}")
-                        print(f"Заблокирован: {'Да' if user['Is_Locked'] else 'Нет'}")
-                        print(f"Успешных входов: {user.get('successful_logins', 0)}")
-                        print(f"Неудачных входов: {user.get('failed_logins', 0)}")
-                    else:
-                        print(f"❌ Пользователь с ID {user_id} не найден")
-
-                except ValueError:
-                    print("❌ ID должен быть числом")
-
-            # UPDATE - Обновить пользователя
-            elif cmd == "update":
-                if len(parts) < 3:
-                    print("❌ Использование: update <user_id> [--username <name>] [--role <role>]")
-                    continue
-
-                try:
-                    user_id = int(parts[1])
-                    kwargs = {}
-
-                    i = 2
-                    while i < len(parts):
-                        if parts[i] == "--username" and i + 1 < len(parts):
-                            kwargs['username'] = parts[i + 1]
-                            i += 2
-                        elif parts[i] == "--role" and i + 1 < len(parts):
-                            kwargs['role'] = parts[i + 1]
-                            i += 2
-                        else:
-                            i += 1
-
-                    if not kwargs:
-                        print("❌ Не указаны параметры для обновления")
-                        continue
-
-                    success, message = user_mgr.update_user(user_id, admin_id, **kwargs)
-
-                    if success:
-                        print(f"✅ {message}")
-                    else:
-                        print(f"❌ {message}")
-
-                except ValueError:
-                    print("❌ ID должен быть числом")
-
-            # DELETE - Удалить пользователя
-            elif cmd == "delete":
-                if len(parts) < 2:
-                    print("❌ Использование: delete <user_id>")
-                    continue
-
-                try:
-                    user_id = int(parts[1])
-
-                    # Подтверждение
-                    confirm = input(f"⚠️ Вы уверены, что хотите удалить пользователя ID {user_id}? (y/n): ")
-                    if confirm.lower() != 'y':
-                        print("❌ Операция отменена")
-                        continue
-
-                    success, message = user_mgr.delete_user(user_id, admin_id)
-
-                    if success:
-                        print(f"✅ {message}")
-                    else:
-                        print(f"❌ {message}")
-
-                except ValueError:
-                    print("❌ ID должен быть числом")
-
-            # RESET - Сбросить пароль
-            elif cmd == "reset":
-                if len(parts) < 3:
-                    print("❌ Использование: reset <user_id> <new_password>")
-                    continue
-
-                try:
-                    user_id = int(parts[1])
-                    new_password = parts[2]
-
-                    success, message = user_mgr.reset_password(user_id, new_password, admin_id)
-
-                    if success:
-                        print(f"✅ {message}")
-                    else:
-                        print(f"❌ {message}")
-
-                except ValueError:
-                    print("❌ ID должен быть числом")
-
-            # EXPIRY - Обновить срок действия пароля
-            elif cmd == "expiry":
-                if len(parts) < 2:
-                    print("❌ Использование: expiry <user_id> [days]")
-                    continue
-
-                try:
-                    user_id = int(parts[1])
-                    days = int(parts[2]) if len(parts) > 2 else None
-
-                    success, message = user_mgr.update_password_expiry(user_id, days, admin_id)
-
-                    if success:
-                        print(f"✅ {message}")
-                    else:
-                        print(f"❌ {message}")
-
-                except ValueError:
-                    print("❌ ID и дни должны быть числами")
-
-            # UNLOCK - Разблокировать пользователя
-            elif cmd == "unlock":
-                if len(parts) < 2:
-                    print("❌ Использование: unlock <user_id>")
-                    continue
-
-                try:
-                    user_id = int(parts[1])
-                    success, message = user_mgr.unlock_user(user_id, admin_id)
-
-                    if success:
-                        print(f"✅ {message}")
-                    else:
-                        print(f"❌ {message}")
-
-                except ValueError:
-                    print("❌ ID должен быть числом")
-
-            # STATS - Статистика
-            elif cmd == "stats":
-                stats = user_mgr.get_user_statistics()
-
-                print("\n📊 Статистика пользователей:")
-                print("-" * 40)
-                print(f"Всего пользователей: {stats.get('total_users', 0)}")
-                print(f"Активных (30 дн.): {stats.get('active_users', 0)}")
-                print(f"Истекшие пароли: {stats.get('expired_passwords', 0)}")
-                print(f"Заблокировано: {stats.get('locked_users', 0)}")
-                print("\nПо ролям:")
-                for role, count in stats.get('by_role', {}).items():
-                    print(f"  {role}: {count}")
-
-            # EXPORT - Экспорт данных
-            elif cmd == "export":
-                format_type = parts[1] if len(parts) > 1 else 'json'
-
-                if format_type not in ['json', 'csv']:
-                    print("❌ Формат должен быть 'json' или 'csv'")
-                    continue
-
-                data = user_mgr.export_users_data(format_type)
-
-                if data:
-                    filename = f"users_export.{format_type}"
-                    with open(filename, 'w', encoding='utf-8') as f:
-                        f.write(data)
-                    print(f"✅ Данные экспортированы в файл: {filename}")
-                else:
-                    print("❌ Ошибка экспорта данных")
-
-            # EXIT - Выход
-            elif cmd == "exit":
-                print("👋 До свидания!")
-                break
-
-            else:
-                print(f"❌ Неизвестная команда: {cmd}")
-                print("Введите 'help' для списка команд (в разработке)")
-
-        except KeyboardInterrupt:
-            print("\n👋 До свидания!")
-            break
-        except Exception as e:
-            print(f"❌ Ошибка: {e}")
-
-    # Закрываем соединение
-    db_mgr.disconnect()
-
-if __name__ == "__main__":
-    test_user_manager_console()
+# def test_user_manager_console():
+#     """
+#     Тестовая функция для работы с БД пользователей через консоль
+#     """
+#     import sys
+#     import os
+#
+#     # Добавляем путь для импорта auth
+#     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+#
+#     from auth import DatabaseManager, Authenticator
+#
+#     # Настройка логирования
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+#     )
+#
+#     print("=" * 60)
+#     print("ТЕСТОВАЯ КОНСОЛЬ УПРАВЛЕНИЯ ПОЛЬЗОВАТЕЛЯМИ")
+#     print("=" * 60)
+#
+#     # Инициализация БД
+#     db_mgr = DatabaseManager("neuro_pharm_test.db")
+#     if not db_mgr.connect():
+#         print("❌ Ошибка подключения к БД")
+#         return
+#
+#     # Инициализация аутентификатора для создания таблиц
+#     auth = Authenticator(db_mgr)
+#     if not auth.initialize_database():
+#         print("❌ Ошибка инициализации БД")
+#         return
+#
+#     # Создаем менеджер пользователей
+#     user_mgr = UserManager(db_mgr)
+#
+#     print("✅ База данных инициализирована")
+#     print("\nДоступные команды:")
+#     print("  list [role] [expired] [locked] - Список пользователей")
+#     print("  create <login> <password> [role] - Создать пользователя")
+#     print("  info <user_id> - Информация о пользователе")
+#     print("  update <user_id> [--username <name>] [--role <role>] - Обновить")
+#     print("  delete <user_id> - Удалить пользователя")
+#     print("  reset <user_id> <new_password> - Сбросить пароль")
+#     print("  expiry <user_id> [days] - Обновить срок действия пароля")
+#     print("  unlock <user_id> - Разблокировать пользователя")
+#     print("  stats - Статистика")
+#     print("  export [json|csv] - Экспорт данных")
+#     print("  exit - Выход")
+#     print("-" * 60)
+#
+#     # Получаем ID администратора для операций
+#     admin = user_mgr.get_user_by_username("admin")
+#     admin_id = admin['ID'] if admin else None
+#
+#     if not admin_id:
+#         print("⚠️ Администратор не найден. Некоторые операции могут не работать.")
+#
+#     while True:
+#         try:
+#             command = input("\n> ").strip()
+#
+#             if not command:
+#                 continue
+#
+#             parts = command.split()
+#             cmd = parts[0].lower()
+#
+#             # LIST - Список пользователей
+#             if cmd == "list":
+#                 filters = {}
+#
+#                 # Обработка фильтров
+#                 for part in parts[1:]:
+#                     if part in ['user', 'senior', 'dev']:
+#                         filters['role'] = part
+#                     elif part == 'expired':
+#                         filters['expired_passwords'] = True
+#                     elif part == 'locked':
+#                         filters['locked'] = True
+#
+#                 users = user_mgr.get_all_users(filters)
+#
+#                 print(f"\n📋 Список пользователей (всего: {len(users)}):")
+#                 print("-" * 80)
+#                 print(f"{'ID':<5} {'Логин':<20} {'Роль':<10} {'Срок пароля':<12} {'Статус':<15}")
+#                 print("-" * 80)
+#
+#                 for user in users:
+#                     status = []
+#                     if user['Is_Locked']:
+#                         status.append("🔒 ЗАБЛОКИРОВАН")
+#                     elif user['Password_Expired']:
+#                         status.append("⚠️ ПАРОЛЬ ИСТЕК")
+#                     elif user['Days_Until_Expiry'] <= 14:
+#                         status.append(f"⏰ {user['Days_Until_Expiry']} дн.")
+#                     else:
+#                         status.append("✅ Активен")
+#
+#                     print(f"{user['ID']:<5} {user['Username']:<20} {user['Role']:<10} "
+#                           f"{user['Password_Expiry']:<12} {' '.join(status):<15}")
+#
+#             # CREATE - Создать пользователя
+#             elif cmd == "create":
+#                 if len(parts) < 3:
+#                     print("❌ Использование: create <login> <password> [role]")
+#                     continue
+#
+#                 username = parts[1]
+#                 password = parts[2]
+#                 role = parts[3] if len(parts) > 3 else 'user'
+#
+#                 success, message, user_id = user_mgr.create_user(username, password, role, admin_id)
+#
+#                 if success:
+#                     print(f"✅ {message} (ID: {user_id})")
+#                 else:
+#                     print(f"❌ {message}")
+#
+#             # INFO - Информация о пользователе
+#             elif cmd == "info":
+#                 if len(parts) < 2:
+#                     print("❌ Использование: info <user_id>")
+#                     continue
+#
+#                 try:
+#                     user_id = int(parts[1])
+#                     user = user_mgr.get_user_info(user_id)
+#
+#                     if user:
+#                         print(f"\n📊 Информация о пользователе ID {user_id}:")
+#                         print("-" * 40)
+#                         print(f"Логин: {user['Username']}")
+#                         print(f"Роль: {user['Role']}")
+#                         print(f"Создан: {user['CreatedAt']}")
+#                         print(f"Последний вход: {user['Last_Login'] or 'Никогда'}")
+#                         print(f"Срок пароля до: {user['Password_Expiry']}")
+#                         print(f"Статус пароля: {'Истек' if user['Password_Expired'] else f'Действует ({user['Days_Until_Expiry']} дн.)'}")
+#                         print(f"Неудачных попыток: {user.get('Failed_Attempts', 0)}")
+#                         print(f"Заблокирован: {'Да' if user['Is_Locked'] else 'Нет'}")
+#                         print(f"Успешных входов: {user.get('successful_logins', 0)}")
+#                         print(f"Неудачных входов: {user.get('failed_logins', 0)}")
+#                     else:
+#                         print(f"❌ Пользователь с ID {user_id} не найден")
+#
+#                 except ValueError:
+#                     print("❌ ID должен быть числом")
+#
+#             # UPDATE - Обновить пользователя
+#             elif cmd == "update":
+#                 if len(parts) < 3:
+#                     print("❌ Использование: update <user_id> [--username <name>] [--role <role>]")
+#                     continue
+#
+#                 try:
+#                     user_id = int(parts[1])
+#                     kwargs = {}
+#
+#                     i = 2
+#                     while i < len(parts):
+#                         if parts[i] == "--username" and i + 1 < len(parts):
+#                             kwargs['username'] = parts[i + 1]
+#                             i += 2
+#                         elif parts[i] == "--role" and i + 1 < len(parts):
+#                             kwargs['role'] = parts[i + 1]
+#                             i += 2
+#                         else:
+#                             i += 1
+#
+#                     if not kwargs:
+#                         print("❌ Не указаны параметры для обновления")
+#                         continue
+#
+#                     success, message = user_mgr.update_user(user_id, admin_id, **kwargs)
+#
+#                     if success:
+#                         print(f"✅ {message}")
+#                     else:
+#                         print(f"❌ {message}")
+#
+#                 except ValueError:
+#                     print("❌ ID должен быть числом")
+#
+#             # DELETE - Удалить пользователя
+#             elif cmd == "delete":
+#                 if len(parts) < 2:
+#                     print("❌ Использование: delete <user_id>")
+#                     continue
+#
+#                 try:
+#                     user_id = int(parts[1])
+#
+#                     # Подтверждение
+#                     confirm = input(f"⚠️ Вы уверены, что хотите удалить пользователя ID {user_id}? (y/n): ")
+#                     if confirm.lower() != 'y':
+#                         print("❌ Операция отменена")
+#                         continue
+#
+#                     success, message = user_mgr.delete_user(user_id, admin_id)
+#
+#                     if success:
+#                         print(f"✅ {message}")
+#                     else:
+#                         print(f"❌ {message}")
+#
+#                 except ValueError:
+#                     print("❌ ID должен быть числом")
+#
+#             # RESET - Сбросить пароль
+#             elif cmd == "reset":
+#                 if len(parts) < 3:
+#                     print("❌ Использование: reset <user_id> <new_password>")
+#                     continue
+#
+#                 try:
+#                     user_id = int(parts[1])
+#                     new_password = parts[2]
+#
+#                     success, message = user_mgr.reset_password(user_id, new_password, admin_id)
+#
+#                     if success:
+#                         print(f"✅ {message}")
+#                     else:
+#                         print(f"❌ {message}")
+#
+#                 except ValueError:
+#                     print("❌ ID должен быть числом")
+#
+#             # EXPIRY - Обновить срок действия пароля
+#             elif cmd == "expiry":
+#                 if len(parts) < 2:
+#                     print("❌ Использование: expiry <user_id> [days]")
+#                     continue
+#
+#                 try:
+#                     user_id = int(parts[1])
+#                     days = int(parts[2]) if len(parts) > 2 else None
+#
+#                     success, message = user_mgr.update_password_expiry(user_id, days, admin_id)
+#
+#                     if success:
+#                         print(f"✅ {message}")
+#                     else:
+#                         print(f"❌ {message}")
+#
+#                 except ValueError:
+#                     print("❌ ID и дни должны быть числами")
+#
+#             # UNLOCK - Разблокировать пользователя
+#             elif cmd == "unlock":
+#                 if len(parts) < 2:
+#                     print("❌ Использование: unlock <user_id>")
+#                     continue
+#
+#                 try:
+#                     user_id = int(parts[1])
+#                     success, message = user_mgr.unlock_user(user_id, admin_id)
+#
+#                     if success:
+#                         print(f"✅ {message}")
+#                     else:
+#                         print(f"❌ {message}")
+#
+#                 except ValueError:
+#                     print("❌ ID должен быть числом")
+#
+#             # STATS - Статистика
+#             elif cmd == "stats":
+#                 stats = user_mgr.get_user_statistics()
+#
+#                 print("\n📊 Статистика пользователей:")
+#                 print("-" * 40)
+#                 print(f"Всего пользователей: {stats.get('total_users', 0)}")
+#                 print(f"Активных (30 дн.): {stats.get('active_users', 0)}")
+#                 print(f"Истекшие пароли: {stats.get('expired_passwords', 0)}")
+#                 print(f"Заблокировано: {stats.get('locked_users', 0)}")
+#                 print("\nПо ролям:")
+#                 for role, count in stats.get('by_role', {}).items():
+#                     print(f"  {role}: {count}")
+#
+#             # EXPORT - Экспорт данных
+#             elif cmd == "export":
+#                 format_type = parts[1] if len(parts) > 1 else 'json'
+#
+#                 if format_type not in ['json', 'csv']:
+#                     print("❌ Формат должен быть 'json' или 'csv'")
+#                     continue
+#
+#                 data = user_mgr.export_users_data(format_type)
+#
+#                 if data:
+#                     filename = f"users_export.{format_type}"
+#                     with open(filename, 'w', encoding='utf-8') as f:
+#                         f.write(data)
+#                     print(f"✅ Данные экспортированы в файл: {filename}")
+#                 else:
+#                     print("❌ Ошибка экспорта данных")
+#
+#             # EXIT - Выход
+#             elif cmd == "exit":
+#                 print("👋 До свидания!")
+#                 break
+#
+#             else:
+#                 print(f"❌ Неизвестная команда: {cmd}")
+#                 print("Введите 'help' для списка команд (в разработке)")
+#
+#         except KeyboardInterrupt:
+#             print("\n👋 До свидания!")
+#             break
+#         except Exception as e:
+#             print(f"❌ Ошибка: {e}")
+#
+#     # Закрываем соединение
+#     db_mgr.disconnect()
+#
+# if __name__ == "__main__":
+#     test_user_manager_console()
