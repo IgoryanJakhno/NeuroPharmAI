@@ -971,7 +971,7 @@ def test_user_manager_console():
                         print(f"Создан: {user['CreatedAt']}")
                         print(f"Последний вход: {user['Last_Login'] or 'Никогда'}")
                         print(f"Срок пароля до: {user['Password_Expiry']}")
-                        print(f"Статус пароля: {'Истек' if user['Password_Expired'] else f'Действует ({user["Days_Until_Expiry"]} дн.)'}")
+                        print(f"Статус пароля: {'Истек' if user['Password_Expired'] else f'Действует ({user['Days_Until_Expiry']} дн.)'}")
                         print(f"Неудачных попыток: {user.get('Failed_Attempts', 0)}")
                         print(f"Заблокирован: {'Да' if user['Is_Locked'] else 'Нет'}")
                         print(f"Успешных входов: {user.get('successful_logins', 0)}")
@@ -1149,7 +1149,6 @@ def test_user_manager_console():
 
     # Закрываем соединение
     db_mgr.disconnect()
-
 
 if __name__ == "__main__":
     test_user_manager_console()
