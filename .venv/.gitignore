@@ -2,3 +2,6 @@
 *.dbf
 /egk_extend306/
 *.db
+
+.venv/
+venv/
