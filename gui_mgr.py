@@ -28,6 +28,7 @@ from dbms_parser import DBMSParser
 from llm_mgr import LLMManager
 from ftp_agent import FTPAgent
 from site_parser import SiteParser
+from config_manager import load_config, save_config
 
 class LoginDialog(tk.Toplevel):
     """
@@ -677,13 +678,42 @@ class SettingsWindow(tk.Toplevel):
         notebook = ttk.Notebook(self)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+        # --- ЗАГРУЗКА ТЕКУЩИХ НАСТРОЕК ДЛЯ ПОЛЕЙ ---
+        # LLM: если менеджер есть – берём из него, иначе из конфига
+        if llm_manager:
+            max_tokens = llm_manager.max_tokens
+            temperature = llm_manager.temperature
+            timeout = llm_manager.timeout
+            model_name = llm_manager.model_name
+        else:
+            config = load_config()
+            llm_cfg = config.get("llm", {})
+            max_tokens = llm_cfg.get("max_tokens", 512)
+            temperature = llm_cfg.get("temperature", 0.7)
+            timeout = llm_cfg.get("timeout", 120)
+            model_name = llm_cfg.get("model_name", "llama3.1:8b")
+
+        # FTP: если агент есть – берём из него, иначе из конфига
+        if ftp_agent:
+            ftp_host = ftp_agent.host
+            ftp_port = ftp_agent.port
+            ftp_user = ftp_agent.username
+            ftp_pass = ftp_agent.password
+        else:
+            config = load_config()
+            ftp_cfg = config.get("ftp", {})
+            ftp_host = ftp_cfg.get("host", "ftp.aptekamos.ru")
+            ftp_port = ftp_cfg.get("port", 21)
+            ftp_user = ftp_cfg.get("username", "anonymous")
+            ftp_pass = ftp_cfg.get("password", "")
+
         # ===== Вкладка LLM =====
         llm_frame = ttk.Frame(notebook)
         notebook.add(llm_frame, text="🤖 LLM")
 
         ttk.Label(llm_frame, text="Максимальная длина ответа (токенов):", font=("Arial", 10)).grid(
             row=0, column=0, sticky=tk.W, padx=10, pady=(15, 5))
-        self.max_tokens_var = tk.StringVar(value=str(llm_manager.max_tokens if llm_manager else 512))
+        self.max_tokens_var = tk.StringVar(value=str(max_tokens))
         ttk.Entry(llm_frame, textvariable=self.max_tokens_var, width=15, font=("Arial", 10)).grid(
             row=0, column=1, sticky=tk.W, padx=10, pady=(15, 5))
         ttk.Label(llm_frame, text="(50–4096)", foreground="gray").grid(
@@ -691,7 +721,7 @@ class SettingsWindow(tk.Toplevel):
 
         ttk.Label(llm_frame, text="Температура генерации:", font=("Arial", 10)).grid(
             row=1, column=0, sticky=tk.W, padx=10, pady=5)
-        self.temperature_var = tk.StringVar(value=str(llm_manager.temperature if llm_manager else 0.7))
+        self.temperature_var = tk.StringVar(value=str(temperature))
         ttk.Entry(llm_frame, textvariable=self.temperature_var, width=15, font=("Arial", 10)).grid(
             row=1, column=1, sticky=tk.W, padx=10, pady=5)
         ttk.Label(llm_frame, text="(0.0–2.0)", foreground="gray").grid(
@@ -699,7 +729,7 @@ class SettingsWindow(tk.Toplevel):
 
         ttk.Label(llm_frame, text="Таймаут запроса (сек):", font=("Arial", 10)).grid(
             row=2, column=0, sticky=tk.W, padx=10, pady=5)
-        self.timeout_var = tk.StringVar(value=str(llm_manager.timeout if llm_manager else 120))
+        self.timeout_var = tk.StringVar(value=str(timeout))
         ttk.Entry(llm_frame, textvariable=self.timeout_var, width=15, font=("Arial", 10)).grid(
             row=2, column=1, sticky=tk.W, padx=10, pady=5)
         ttk.Label(llm_frame, text="(30–600)", foreground="gray").grid(
@@ -707,7 +737,7 @@ class SettingsWindow(tk.Toplevel):
 
         ttk.Label(llm_frame, text="Модель:", font=("Arial", 10)).grid(
             row=3, column=0, sticky=tk.W, padx=10, pady=5)
-        self.model_var = tk.StringVar(value=llm_manager.model_name if llm_manager else "llama3.1:8b")
+        self.model_var = tk.StringVar(value=model_name)
         ttk.Entry(llm_frame, textvariable=self.model_var, width=25, font=("Arial", 10)).grid(
             row=3, column=1, sticky=tk.W, padx=10, pady=5)
 
@@ -725,22 +755,24 @@ class SettingsWindow(tk.Toplevel):
             row=0, column=0, columnspan=2, pady=10, padx=10, sticky=tk.W)
 
         ttk.Label(ftp_frame, text="Адрес сервера:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
-        self.ftp_host_var = tk.StringVar(value="ftp.example.com")
+        self.ftp_host_var = tk.StringVar(value=ftp_host)
         ttk.Entry(ftp_frame, textvariable=self.ftp_host_var, width=30).grid(row=1, column=1, padx=10, pady=5)
 
         ttk.Label(ftp_frame, text="Порт:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
-        self.ftp_port_var = tk.StringVar(value="21")
+        self.ftp_port_var = tk.StringVar(value=str(ftp_port))
         ttk.Entry(ftp_frame, textvariable=self.ftp_port_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10,
                                                                             pady=5)
 
         ttk.Label(ftp_frame, text="Пользователь:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=5)
-        self.ftp_user_var = tk.StringVar(value="anonymous")
+        self.ftp_user_var = tk.StringVar(value=ftp_user)
         ttk.Entry(ftp_frame, textvariable=self.ftp_user_var, width=30).grid(row=3, column=1, padx=10, pady=5)
 
         ttk.Label(ftp_frame, text="Пароль:").grid(row=4, column=0, sticky=tk.W, padx=10, pady=5)
-        self.ftp_pass_var = tk.StringVar()
-        ttk.Entry(ftp_frame, textvariable=self.ftp_pass_var, width=30, show="•").grid(row=4, column=1, padx=10, pady=5)
+        self.ftp_pass_var = tk.StringVar(value=ftp_pass)
+        ttk.Entry(ftp_frame, textvariable=self.ftp_pass_var, width=30, show="•").grid(row=4, column=1, padx=10,
+                                                                                      pady=5)
 
+        # Кнопка проверки соединения
         ttk.Button(ftp_frame, text="Проверить соединение", command=self._check_ftp).grid(
             row=5, column=0, columnspan=2, pady=15)
         self.ftp_status_label = ttk.Label(ftp_frame, text="", font=("Arial", 9))
@@ -793,7 +825,6 @@ class SettingsWindow(tk.Toplevel):
             self.llm_status_label.config(text="⚠️ LLM-менеджер не инициализирован", foreground="orange")
 
     def _save_settings(self):
-        """Сохранение настроек."""
         try:
             if self.llm_manager:
                 self.llm_manager.max_tokens = int(self.max_tokens_var.get())
@@ -803,7 +834,6 @@ class SettingsWindow(tk.Toplevel):
                 if new_model:
                     self.llm_manager.model_name = new_model
 
-            # Сохраняем FTP настройки
             if self.ftp_agent:
                 self.ftp_agent.update_settings(
                     host=self.ftp_host_var.get().strip(),
@@ -813,6 +843,25 @@ class SettingsWindow(tk.Toplevel):
                     remote_file="egk_extend306.zip",
                     local_dir="."
                 )
+
+            # --- СОХРАНЕНИЕ В ФАЙЛ (добавить этот блок) ---
+            config = {
+                "ftp": {
+                    "host": self.ftp_host_var.get().strip(),
+                    "port": int(self.ftp_port_var.get()),
+                    "username": self.ftp_user_var.get().strip(),
+                    "password": self.ftp_pass_var.get(),
+                    "remote_file": "egk_extend306.zip",
+                    "local_dir": "."
+                },
+                "llm": {
+                    "max_tokens": int(self.max_tokens_var.get()),
+                    "temperature": float(self.temperature_var.get()),
+                    "timeout": int(self.timeout_var.get()),
+                    "model_name": self.model_var.get().strip()
+                }
+            }
+            save_config(config)
 
             logging.getLogger("NeuroPharm.GUI").info(f"Настройки сохранены")
             messagebox.showinfo("Настройки", "Настройки успешно сохранены.")
@@ -856,10 +905,6 @@ class MainApplication:
         # Окна открываются только один раз
         self._open_windows = {}
 
-        #FTP-модуль
-        self.ftp_agent = FTPAgent()
-
-
     def _init_modules(self):
         """Инициализация всех модулей системы."""
         from auth import DatabaseManager as AuthDB, Authenticator
@@ -887,8 +932,28 @@ class MainApplication:
         # Парсеры
         self.dbms_parser = DBMSParser()
 
-        # LLM
-        self.llm_manager = LLMManager()
+        # Загружаем конфигурацию
+        config = load_config()
+        ftp_cfg = config.get("ftp", {})
+        llm_cfg = config.get("llm", {})
+
+        # LLM с параметрами из конфига
+        self.llm_manager = LLMManager(
+            model_name=llm_cfg.get("model_name", "llama3.1:8b"),
+            max_tokens=llm_cfg.get("max_tokens", 512),
+            temperature=llm_cfg.get("temperature", 0.7),
+            timeout=llm_cfg.get("timeout", 120)
+        )
+
+        # FTP-агент с параметрами из конфига
+        self.ftp_agent = FTPAgent(
+            host=ftp_cfg.get("host", "ftp.aptekamos.ru"),
+            port=ftp_cfg.get("port", 21),
+            username=ftp_cfg.get("username", "anonymous"),
+            password=ftp_cfg.get("password", ""),
+            remote_file=ftp_cfg.get("remote_file", "egk_extend306.zip"),
+            local_dir=ftp_cfg.get("local_dir", ".")
+        )
 
         # Парсер сайтов
         self.site_parser = SiteParser()
@@ -924,6 +989,50 @@ class MainApplication:
                     "Поместите DBF-файлы в папку egk_extend306."
                 )
 
+    def _auto_update_database(self):
+        """Автоматическая загрузка базы данных с FTP при отсутствии локальной."""
+        if self.med_db_initialized:
+            return  # уже есть база
+        # Проверяем, есть ли настройки FTP
+        if not self.ftp_agent:
+            return
+        # Проверяем доступность сервера (короткий таймаут)
+        has_update, msg = self.ftp_agent.check_for_updates()
+        if "Не удалось подключиться" in msg:
+            # Сервер недоступен – просто выводим предупреждение
+            self.root.after(0, lambda: messagebox.showwarning(
+                "Нет соединения",
+                "Не удалось подключиться к FTP-серверу для загрузки базы данных.\n"
+                "Проверьте настройки FTP или загрузите базу вручную."
+            ))
+            return
+        # Если сервер доступен и база отсутствует – запускаем загрузку
+        if "Локальная база данных не найдена" in msg:
+            # Показываем сообщение о начале загрузки
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Загрузка базы данных",
+                "Начинается загрузка базы данных с FTP-сервера...\n"
+                "Это может занять несколько минут."
+            ))
+            # Запускаем загрузку в отдельном потоке
+            import threading
+            def download_task():
+                success, result_msg = self.ftp_agent.update_database()
+                self.root.after(0, lambda: self._on_download_finished(success, result_msg))
+
+            threading.Thread(target=download_task, daemon=True).start()
+
+    def _on_download_finished(self, success, msg):
+        if success:
+            messagebox.showinfo("Успех", f"База данных успешно загружена.\n{msg}")
+            # Переинициализируем БД
+            self.med_db_initialized = False
+            self._init_med_database()
+            # Обновляем строку состояния (если есть метод)
+            self._update_status_bar()
+        else:
+            messagebox.showerror("Ошибка", f"Не удалось загрузить базу данных:\n{msg}")
+
     def _show_login(self):
         """Показ диалога входа."""
         login_dialog = LoginDialog(self.root, self.auth)
@@ -933,10 +1042,10 @@ class MainApplication:
             self.current_user = login_dialog.result
             self._init_med_database()
             self._build_main_ui()
-            # Показываем главное окно после успешной авторизации
-            self.root.deiconify()  # Или self.root.withdraw(False) – показывает окно
-        else:
-            self.root.destroy()  # Выход, если авторизация не пройдена
+            self.root.deiconify()
+            # --- АВТОМАТИЧЕСКАЯ ЗАГРУЗКА, ЕСЛИ БАЗА ОТСУТСТВУЕТ ---
+            if not self.med_db_initialized:
+                self.root.after(1000, self._auto_update_database)  # отложим на 1 сек
 
     def _build_main_ui(self):
         """Построение главного интерфейса."""
