@@ -989,6 +989,50 @@ class MainApplication:
                     "Поместите DBF-файлы в папку egk_extend306."
                 )
 
+    def _auto_update_database(self):
+        """Автоматическая загрузка базы данных с FTP при отсутствии локальной."""
+        if self.med_db_initialized:
+            return  # уже есть база
+        # Проверяем, есть ли настройки FTP
+        if not self.ftp_agent:
+            return
+        # Проверяем доступность сервера (короткий таймаут)
+        has_update, msg = self.ftp_agent.check_for_updates()
+        if "Не удалось подключиться" in msg:
+            # Сервер недоступен – просто выводим предупреждение
+            self.root.after(0, lambda: messagebox.showwarning(
+                "Нет соединения",
+                "Не удалось подключиться к FTP-серверу для загрузки базы данных.\n"
+                "Проверьте настройки FTP или загрузите базу вручную."
+            ))
+            return
+        # Если сервер доступен и база отсутствует – запускаем загрузку
+        if "Локальная база данных не найдена" in msg:
+            # Показываем сообщение о начале загрузки
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Загрузка базы данных",
+                "Начинается загрузка базы данных с FTP-сервера...\n"
+                "Это может занять несколько минут."
+            ))
+            # Запускаем загрузку в отдельном потоке
+            import threading
+            def download_task():
+                success, result_msg = self.ftp_agent.update_database()
+                self.root.after(0, lambda: self._on_download_finished(success, result_msg))
+
+            threading.Thread(target=download_task, daemon=True).start()
+
+    def _on_download_finished(self, success, msg):
+        if success:
+            messagebox.showinfo("Успех", f"База данных успешно загружена.\n{msg}")
+            # Переинициализируем БД
+            self.med_db_initialized = False
+            self._init_med_database()
+            # Обновляем строку состояния (если есть метод)
+            self._update_status_bar()
+        else:
+            messagebox.showerror("Ошибка", f"Не удалось загрузить базу данных:\n{msg}")
+
     def _show_login(self):
         """Показ диалога входа."""
         login_dialog = LoginDialog(self.root, self.auth)
@@ -998,10 +1042,10 @@ class MainApplication:
             self.current_user = login_dialog.result
             self._init_med_database()
             self._build_main_ui()
-            # Показываем главное окно после успешной авторизации
-            self.root.deiconify()  # Или self.root.withdraw(False) – показывает окно
-        else:
-            self.root.destroy()  # Выход, если авторизация не пройдена
+            self.root.deiconify()
+            # --- АВТОМАТИЧЕСКАЯ ЗАГРУЗКА, ЕСЛИ БАЗА ОТСУТСТВУЕТ ---
+            if not self.med_db_initialized:
+                self.root.after(1000, self._auto_update_database)  # отложим на 1 сек
 
     def _build_main_ui(self):
         """Построение главного интерфейса."""
